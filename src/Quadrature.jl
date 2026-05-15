@@ -9,6 +9,7 @@
 
 module Quadrature
 
+using LinearAlgebra
 export gauss_legendre_1d, gauss_legendre_2d, QuadRule2D
 
 """

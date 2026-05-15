@@ -1,12 +1,12 @@
 # test/runtests.jl
 using Test
 
-include(joinpath(@__DIR__, "..", "src", "ViewFactors.jl"))
-using .ViewFactors
-using .ViewFactors.Quadrature
-using .ViewFactors.Geometry
-using .ViewFactors.BVH
-using .ViewFactors.RayCast
+include(joinpath(@__DIR__, "..", "src", "RadiativeViewFactor.jl"))
+using .RadiativeViewFactor
+using .RadiativeViewFactor.Quadrature
+using .RadiativeViewFactor.Geometry
+using .RadiativeViewFactor.BVH
+using .RadiativeViewFactor.RayCast
 using StaticArrays
 using LinearAlgebra
 
