@@ -5,7 +5,7 @@ discretized on conformal, hexahedral, 2nd-order meshes generated with [Gmsh](htt
 
 ## Features
 
-- Reads Gmsh `.msh` (v4) files via the `Gmsh` Julia SDK
+- Reads Gmsh `.msh` files via the `Gmsh` Julia SDK
 - Supports **2nd-order (serendipity) quadrilateral** surface elements (`Quad8`)
 - Groups surfaces by **Gmsh physical groups**
 - Computes view factors using **Gaussian quadrature** on each element pair
