@@ -1,33 +1,36 @@
-# RadiativeViewFactors.jl
+# RadiativeViewFactor.jl
 
 [![CI](https://github.com/rot4te/RadiativeViewFactor/actions/workflows/CI.yml/badge.svg)](https://github.com/rot4te/RadiativeViewFactor/actions/workflows/CI.yml)
 
-A modular Julia package for computing **radiative view factors** between arbitrary surfaces
-discretized on conformal, hexahedral, 2nd-order meshes generated with [Gmsh](https://gmsh.info/).
+A Julia package for computing **radiative view factors** between arbitrary surfaces
+discretized on 2nd-order surface meshes generated with [Gmsh](https://gmsh.info/).
 
 ## Features
 
-- Reads Gmsh `.msh` files via the `Gmsh` Julia SDK
-- Supports **2nd-order (serendipity) quadrilateral** surface elements (`Quad8`)
-- Groups surfaces by **Gmsh physical groups**
-- Computes view factors using **Gaussian quadrature** on each element pair
-- **Obstruction detection** via ray–triangle intersection (Möller–Trumbore) on a BVH
-- Enforces the **reciprocity** relation and **row-sum** (closure) check
-- Outputs a dense or sparse `F[i,j]` matrix between physical groups or individual elements
+- Reads Gmsh `.msh` files via the Gmsh Julia SDK
+- Supports **Quad8** (8-node serendipity quadrilateral) and **Tri6** (6-node triangular) surface elements; Quad9 centre node is silently dropped
+- Groups surfaces by **Gmsh physical groups**; view factors reported at both element and group level
+- Gauss–Legendre quadrature on each element pair (pre-tabulated for n ≤ 5, Golub–Welsch algorithm for n > 5); Dunavant rules for triangular elements
+- **Obstruction detection** via Möller–Trumbore ray–triangle intersection on an axis-aligned BVH; excluded per emitter/receiver pair
+- CPU backend: multi-threaded via `Threads.@threads`
+- GPU backends: NVIDIA (CUDA.jl) and Apple Silicon (Metal.jl) via KernelAbstractions.jl
+- **Reciprocity** and **closure** (row-sum) checks on the assembled matrix
 
 ## Project Layout
 
 ```
 RadiativeViewFactor.jl/
 ├── src/
-│   ├── RadiativeViewFactor.jl          # Package entry-point, exports
-│   ├── MeshIO.jl               # Gmsh mesh loading, physical-group extraction
-│   ├── Geometry.jl             # Element geometry: normals, Jacobians, quadrature maps
-│   ├── Quadrature.jl           # Gauss–Legendre rules on [-1,1]²
-│   ├── BVH.jl                  # Axis-aligned bounding-volume hierarchy for ray casting
-│   ├── RayCast.jl              # Möller–Trumbore ray–triangle intersection + obstruction test
-│   ├── ViewFactorKernel.jl     # Double-area integral kernel, element-pair VF
-│   └── Assembly.jl             # Assemble full F matrix; physical-group aggregation
+│   ├── RadiativeViewFactor.jl   # Package entry-point and public exports
+│   ├── MeshIO.jl                # Gmsh mesh loading, physical-group extraction
+│   ├── Quadrature.jl            # Gauss–Legendre rules on [-1,1]²
+│   ├── Geometry.jl              # Quad8 shape functions, normals, Jacobians, element area
+│   ├── BVH.jl                   # Flat-array axis-aligned BVH for triangle soup
+│   ├── RayCast.jl               # Segment–BVH visibility test
+│   ├── ViewFactorKernel.jl      # Double-area integral kernel; element-pair integrator
+│   ├── GPUKernels.jl            # KernelAbstractions GPU kernels (Quad8 + Tri6)
+│   ├── Assembly.jl              # CPU assembly; group aggregation; reciprocity/closure checks
+│   └── GPUAssembly.jl           # GPU assembly path
 ├── test/
 │   └── runtests.jl
 └── Project.toml
@@ -36,36 +39,120 @@ RadiativeViewFactor.jl/
 ## Quick Start
 
 ```julia
-using RadiativeViewFactors
+using RadiativeViewFactor
 
-# Load mesh
+# Load a Gmsh mesh (surfaces must be in Physical Surface groups, 2nd-order elements)
 mesh = load_mesh("geometry.msh")
 
-# Compute element-level view factor matrix (with obstruction checking)
-F_elem = compute_view_factors(mesh; nquad=4, check_obstruction=true)
+# Compute view factors on CPU (multi-threaded)
+result = compute_view_factors(mesh; nquad=4)
 
-# Aggregate to physical groups
-F_groups = aggregate_by_group(F_elem, mesh)
+# result.F_elem  — (N_elem × N_elem) element-level view factor matrix
+# result.F_group — (N_group × N_group) physical-group view factor matrix
+# result.A_elem, result.A_group — element / group areas
 
-println(F_groups)
+# Post-processing checks
+check_reciprocity(result)   # prints max relative error, returns Bool
+check_closure(result)       # prints row-sum range, returns Bool
 ```
 
-## Dependencies
+### With obstruction detection
 
-- `Gmsh` (Julia SDK, wraps the C API)
-- `LinearAlgebra`, `StaticArrays`, `SparseArrays` (stdlib / registered)
+```julia
+# Tags of physical groups that may occlude rays between other surfaces
+result = compute_view_factors(mesh; nquad=4, obstruction_groups=[3, 4])
+```
+
+### GPU (CUDA)
+
+```julia
+using CUDA
+result = compute_view_factors(mesh; nquad=4, backend=CUDABackend())
+```
+
+### GPU (Apple Metal)
+
+```julia
+using Metal
+result = compute_view_factors(mesh; nquad=4, backend=MetalBackend())
+```
+
+> **Note:** obstruction detection is a CPU-only feature; `obstruction_groups` is ignored on GPU backends.
+
+## API Reference
+
+### `load_mesh(filename; surface_dim=2, verbose=true) → MeshData`
+
+Load a Gmsh `.msh` file. `surface_dim` selects the element dimension (2 for surfaces).
+Returns a `MeshData` with fields `coords`, `surface_elems`, `group_tags`, `group_elems`, and `group_tri_soup`.
+
+### `compute_view_factors(mesh; nquad=4, obstruction_groups=Int[], backend=CPU(), self_vf=false, verbose=true) → ViewFactorResult`
+
+Assemble the full view factor matrix.
+
+| Keyword | Default | Description |
+|---|---|---|
+| `nquad` | `4` | Gauss points per direction (nquad² quadrature points per element pair) |
+| `obstruction_groups` | `Int[]` | Physical group tags that may block rays (CPU only) |
+| `backend` | `CPU()` | `CPU()`, `CUDABackend()`, or `MetalBackend()` |
+| `self_vf` | `false` | Include diagonal (self) view factors (curved elements; CPU only) |
+| `verbose` | `true` | Print progress and row-sum diagnostics |
+
+### `ViewFactorResult` fields
+
+| Field | Type | Description |
+|---|---|---|
+| `F_elem` | `Matrix{Float64}` | Element-level view factor matrix (N × N) |
+| `A_elem` | `Vector{Float64}` | Element areas |
+| `F_group` | `Matrix{Float64}` | Group-level view factor matrix (G × G) |
+| `A_group` | `Vector{Float64}` | Group areas |
+| `group_tags` | `Vector{Int}` | Physical group tags (sorted) |
+| `group_names` | `Vector{String}` | Physical group names |
+
+### `aggregate_by_group(result, mesh) → (F_group, A_group, tags, names)`
+
+Re-aggregate element-level results into group-level view factors (useful after modifying `result.F_elem`).
+
+### `check_reciprocity(result; tol=1e-4) → Bool`
+
+Verify the reciprocity relation Aᵢ Fᵢⱼ = Aⱼ Fⱼᵢ. Prints the maximum relative error.
+
+### `check_closure(result; tol=1e-3) → Bool`
+
+Verify that no row sum exceeds 1 + `tol`. Prints the row-sum range.
 
 ## Theory
 
 The view factor from surface i to surface j is:
 
 ```
-F_ij = (1/Aᵢ) ∬_Aᵢ ∬_Aⱼ  [cos θᵢ cos θⱼ / (π r²)] H_ij dAⱼ dAᵢ
+F_ij = (1/Aᵢ) ∬_Aᵢ ∬_Aⱼ  cos θᵢ cos θⱼ / (π r²)  H_ij  dAⱼ dAᵢ
 ```
 
-where θᵢ, θⱼ are angles between the line of sight and each surface normal,
-r is the distance between differential areas, and H_ij ∈ {0,1} is the
+where θᵢ, θⱼ are the angles between the line of sight and each surface normal,
+r is the distance between the differential areas, and H_ij ∈ {0,1} is the
 visibility function (0 = obstructed).
 
-The double surface integral is evaluated numerically using a tensor-product
-Gauss–Legendre rule on each pair of `Quad8` elements mapped to [-1,1]².
+The double integral is evaluated numerically using Gauss–Legendre quadrature
+on each Quad8 element (mapped from [-1,1]²) or Dunavant quadrature on each
+Tri6 element. The BVH is built once per obstruction-group set and reused
+across all element pairs in that set.
+
+## Mesh Requirements
+
+- 2nd-order surface elements: `Quad8` (Gmsh type 16), `Quad9` (type 10, centre node dropped), or `Tri6` (type 9)
+- All radiating surfaces must belong to a **Physical Surface** group
+- Obstructor surfaces should also be in their own Physical Surface group(s)
+
+In Gmsh, set `Mesh.ElementOrder = 2` (or pass `-order 2` on the command line) before meshing.
+
+## Dependencies
+
+| Package | Role |
+|---|---|
+| `Gmsh` | Mesh file I/O |
+| `KernelAbstractions` | Backend-agnostic GPU kernels |
+| `StaticArrays` | Stack-allocated vectors for hot-path geometry |
+| `LinearAlgebra`, `SparseArrays` | Standard library |
+| `CUDA` *(optional)* | NVIDIA GPU backend |
+| `Metal` *(optional)* | Apple Silicon GPU backend |
