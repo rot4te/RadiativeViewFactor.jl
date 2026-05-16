@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-# src/RadiativeViewFactor
-=======
 # src/RadiativeViewFactor.jl
->>>>>>> update
 module RadiativeViewFactor
 
 using LinearAlgebra
