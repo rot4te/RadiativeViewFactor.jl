@@ -11,9 +11,9 @@ discretized on 2nd-order surface meshes generated with [Gmsh](https://gmsh.info/
 - Supports **Quad8** (8-node serendipity quadrilateral) and **Tri6** (6-node triangular) surface elements; Quad9 centre node is silently dropped
 - Groups surfaces by **Gmsh physical groups**; view factors reported at both element and group level
 - Gauss–Legendre quadrature on each element pair (pre-tabulated for n ≤ 5, Golub–Welsch algorithm for n > 5); Dunavant rules for triangular elements
-- **Obstruction detection** via Möller–Trumbore ray–triangle intersection on an axis-aligned BVH; excluded per emitter/receiver pair
-- CPU backend: multi-threaded via `Threads.@threads`
-- GPU backends: NVIDIA (CUDA.jl) and Apple Silicon (Metal.jl) via KernelAbstractions.jl
+- **Obstruction detection** via Möller–Trumbore ray–triangle intersection on an axis-aligned BVH; works on both CPU and GPU backends
+- CPU backend: multi-threaded via `Threads.@threads`; per-pair BVH excludes the emitter and receiver groups from the obstruction geometry
+- GPU backends: NVIDIA (CUDA.jl) and Apple Silicon (Metal.jl) via KernelAbstractions.jl; shadow rays are cast inside the GPU kernel using a flat BVH on device memory
 - **Reciprocity** and **closure** (row-sum) checks on the assembled matrix
 
 ## Project Layout
@@ -28,7 +28,8 @@ RadiativeViewFactor.jl/
 │   ├── BVH.jl                   # Flat-array axis-aligned BVH for triangle soup
 │   ├── RayCast.jl               # Segment–BVH visibility test
 │   ├── ViewFactorKernel.jl      # Double-area integral kernel; element-pair integrator
-│   ├── GPUKernels.jl            # KernelAbstractions GPU kernels (Quad8 + Tri6)
+│   ├── GPUBVH.jl                # Flat BVH for GPU: CPU→device builder + inline traversal kernel
+│   ├── GPUKernels.jl            # KernelAbstractions GPU kernels (Quad8 + Tri6, with obstruction)
 │   ├── Assembly.jl              # CPU assembly; group aggregation; reciprocity/closure checks
 │   └── GPUAssembly.jl           # GPU assembly path
 ├── test/
@@ -77,7 +78,20 @@ using Metal
 result = compute_view_factors(mesh; nquad=4, backend=MetalBackend())
 ```
 
-> **Note:** obstruction detection is a CPU-only feature; `obstruction_groups` is ignored on GPU backends.
+### GPU with obstruction detection
+
+Obstruction detection works on all backends. Pass `obstruction_groups` exactly as you would for the CPU path:
+
+```julia
+using CUDA
+result = compute_view_factors(mesh; nquad=4,
+                              backend=CUDABackend(),
+                              obstruction_groups=[3, 4])
+```
+
+The BVH is built on the CPU from the merged triangle soups of the specified groups, then uploaded to the device as flat typed arrays. Each GPU thread traverses the BVH independently using thread-local stack memory.
+
+> **CPU vs GPU obstruction difference:** on CPU, each emitter–receiver pair excludes the source and destination groups from the obstruction BVH. On GPU a single merged BVH over all `obstruction_groups` is used, so a surface that appears in both `obstruction_groups` and as a radiating surface will self-occlude on GPU.
 
 ## API Reference
 
@@ -93,7 +107,7 @@ Assemble the full view factor matrix.
 | Keyword | Default | Description |
 |---|---|---|
 | `nquad` | `4` | Gauss points per direction (nquad² quadrature points per element pair) |
-| `obstruction_groups` | `Int[]` | Physical group tags that may block rays (CPU only) |
+| `obstruction_groups` | `Int[]` | Physical group tags that may block rays (CPU and GPU) |
 | `backend` | `CPU()` | `CPU()`, `CUDABackend()`, or `MetalBackend()` |
 | `self_vf` | `false` | Include diagonal (self) view factors (curved elements; CPU only) |
 | `verbose` | `true` | Print progress and row-sum diagnostics |
@@ -135,8 +149,11 @@ visibility function (0 = obstructed).
 
 The double integral is evaluated numerically using Gauss–Legendre quadrature
 on each Quad8 element (mapped from [-1,1]²) or Dunavant quadrature on each
-Tri6 element. The BVH is built once per obstruction-group set and reused
-across all element pairs in that set.
+Tri6 element. On CPU the BVH is built once per obstruction-group set and reused across all
+element pairs in that set. On GPU the BVH is flattened to plain typed arrays
+(AABB bounds, node metadata, triangle vertices) and uploaded to device memory
+once before the kernel launch; each thread traverses it using a fixed-size
+thread-local stack.
 
 ## Mesh Requirements
 

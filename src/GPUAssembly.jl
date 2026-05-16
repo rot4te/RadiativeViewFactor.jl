@@ -2,8 +2,6 @@
 # ---------------------------------------------------------------------------
 # GPU dispatch path for compute_view_factors.
 # Called from Assembly.jl when a non-CPU backend is passed.
-# Obstruction checking is CPU-only; if obstruction_groups is non-empty when
-# calling with a GPU backend, a warning is issued and it is ignored.
 # ---------------------------------------------------------------------------
 
 module GPUAssembly
@@ -12,26 +10,30 @@ using LinearAlgebra
 using KernelAbstractions
 
 import ..MeshIO:     MeshData
+import ..GPUBVH:     build_flat_bvh_from_mesh
 import ..GPUKernels: build_gpu_arrays, launch_vf_kernel!
 import ..Assembly:   ViewFactorResult, _aggregate
 
 export compute_view_factors_gpu
 
 """
-    compute_view_factors_gpu(mesh, nquad, backend, FloatT; verbose) -> ViewFactorResult
+    compute_view_factors_gpu(mesh, nquad, backend, FloatT, ArrayT;
+                             obstruction_groups, verbose) -> ViewFactorResult
 
 GPU implementation of compute_view_factors.
 
-`backend`  — a KernelAbstractions backend, e.g. `CUDABackend()` or `MetalBackend()`.
-`FloatT`   — element type: `Float64` for CUDA, `Float32` for Metal.
-`ArrayT`   — device array constructor, provided by the backend extension.
+`backend`            — a KernelAbstractions backend, e.g. `CUDABackend()` or `MetalBackend()`.
+`FloatT`             — element type: `Float64` for CUDA, `Float32` for Metal.
+`ArrayT`             — device array constructor, provided by the backend extension.
+`obstruction_groups` — physical group tags whose geometry occludes rays.
 """
-function compute_view_factors_gpu(mesh    ::MeshData,
-                                   nquad  ::Int,
+function compute_view_factors_gpu(mesh               ::MeshData,
+                                   nquad             ::Int,
                                    backend,
-                                   FloatT ::Type,
-                                   ArrayT ;
-                                   verbose::Bool = true)::ViewFactorResult
+                                   FloatT            ::Type,
+                                   ArrayT            ;
+                                   obstruction_groups::Vector{Int} = Int[],
+                                   verbose           ::Bool        = true)::ViewFactorResult
     N = length(mesh.surface_elems)
     verbose && println("GPU compute_view_factors: $N elements, nquad=$nquad, ",
                        "FloatT=$FloatT, backend=$(typeof(backend))")
@@ -41,9 +43,21 @@ function compute_view_factors_gpu(mesh    ::MeshData,
     ga = build_gpu_arrays(mesh, nquad, ArrayT, FloatT)
     verbose && println("done.")
 
+    # Build flat BVH on CPU and upload to device (if obstruction groups given)
+    flat_bvh = nothing
+    if !isempty(obstruction_groups)
+        verbose && print("  Building obstruction BVH… ")
+        flat_bvh = build_flat_bvh_from_mesh(mesh, obstruction_groups, FloatT, ArrayT)
+        if flat_bvh === nothing
+            @warn "obstruction_groups specified but no triangle geometry found for those groups; " *
+                  "proceeding without obstruction checking."
+        end
+        verbose && println("done.")
+    end
+
     # Launch kernels
     verbose && print("  Running GPU kernel… ")
-    raw_dev, area_dev = launch_vf_kernel!(ga, backend)
+    raw_dev, area_dev = launch_vf_kernel!(ga, backend; flat_bvh=flat_bvh)
     verbose && println("done.")
 
     # Copy results back to CPU

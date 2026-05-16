@@ -39,7 +39,8 @@ Arguments
 - `nquad`               : Gauss points per direction (nquad² per element pair)
 - `obstruction_groups`  : physical group tags that may occlude rays. The source
                           and destination groups are automatically excluded per
-                          pair. Ignored (with a warning) on GPU backends.
+                          pair on CPU. On GPU the full merged obstruction BVH
+                          is used (no per-pair exclusion of source/destination).
 - `backend`             : a KernelAbstractions backend.
                           `CPU()` (default)  — multi-threaded CPU via Threads.@threads
                           `CUDABackend()`    — NVIDIA GPU (requires CUDA.jl loaded)
@@ -57,15 +58,11 @@ function compute_view_factors(mesh               ::MeshData;
     backend isa Type && (backend = backend())
 
     if !(backend isa CPU)
-        isempty(obstruction_groups) ||
-            @warn "obstruction_groups is ignored on GPU backends (CPU-only feature)."
-        # Dispatch to GPU path — the backend extension must have registered
-        # _gpu_array_type and _gpu_float_type for this backend type.
         ArrayT = _gpu_array_type(backend)
         FloatT = _gpu_float_type(backend)
-        # GPUAssembly is loaded as part of the package; call it directly
         return Main.RadiativeViewFactor.GPUAssembly.compute_view_factors_gpu(
-            mesh, nquad, backend, FloatT, ArrayT; verbose=verbose)
+            mesh, nquad, backend, FloatT, ArrayT;
+            obstruction_groups=obstruction_groups, verbose=verbose)
     end
 
     return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose)

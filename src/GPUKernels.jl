@@ -11,6 +11,14 @@
 # communication and no atomic operations except for the area accumulation
 # (which is handled by only writing A_out[i] from threads where j==i+1).
 #
+# Obstruction support
+# -------------------
+# When use_bvh=true the pair kernel casts a shadow ray from each quadrature
+# sample xi toward xj before accumulating the integrand.  The BVH data arrive
+# as five flat device arrays (see GPUBVH.jl) so that no host-side struct needs
+# to live on the GPU.  When use_bvh=false, those arrays are ignored entirely
+# and the compiler eliminates the dead branch.
+#
 # Data layout (all plain arrays, no structs, for GPU compatibility)
 # -----------------------------------------------------------------
 # coords       : Float64/Float32  (3, N_nodes)
@@ -29,6 +37,8 @@ module GPUKernels
 using KernelAbstractions
 using StaticArrays
 using LinearAlgebra: cross, dot
+
+import ..GPUBVH: gpu_intersect_bvh, FlatBVH
 
 export build_gpu_arrays, launch_vf_kernel!
 
@@ -133,6 +143,9 @@ end
 # ---------------------------------------------------------------------------
 # One thread per (i, j) pair with i < j (upper triangle).
 # Grid is launched as (N, N) and threads where i >= j simply return early.
+#
+# When use_bvh=true the five bvh_* arrays are used for shadow-ray testing.
+# When use_bvh=false those arrays are ignored (pass zero-size dummies).
 
 @kernel function _vf_pair_kernel!(raw_out, area_out,
                                    coords,
@@ -140,7 +153,10 @@ end
                                    elem_family, elem_node_idx,
                                    quad_pts, quad_wts,
                                    tri_pts,  tri_wts,
-                                   N)
+                                   N,
+                                   bvh_lo, bvh_hi, bvh_meta,
+                                   bvh_tri_idx, bvh_tris,
+                                   use_bvh::Bool)
     i, j = @index(Global, NTuple)
 
     if i <= N && j <= N && i < j
@@ -186,6 +202,26 @@ end
             end
 
             K = _vf_kernel(xi, nni, xj, nnj)
+
+            # Shadow-ray test: only when K > 0 (both cosines positive) so we
+            # avoid BVH traversal for sample pairs that contribute nothing.
+            if use_bvh && K > zero(T)
+                rx = xj[1] - xi[1]
+                ry = xj[2] - xi[2]
+                rz = xj[3] - xi[3]
+                rlen = sqrt(rx*rx + ry*ry + rz*rz)
+                if rlen > T(1e-15)
+                    inv_r = T(1) / rlen
+                    if gpu_intersect_bvh(bvh_lo, bvh_hi, bvh_meta,
+                                         bvh_tri_idx, bvh_tris,
+                                         xi[1], xi[2], xi[3],
+                                         rx * inv_r, ry * inv_r, rz * inv_r,
+                                         rlen)
+                        K = zero(T)
+                    end
+                end
+            end
+
             inner += wj * K * dAj
         end
 
@@ -200,7 +236,7 @@ end
     end # if i <= N && j <= N && i < j
 end
 
-# Area-only kernel for the diagonal (self-pairs)
+# Area-only kernel for the diagonal (self-pairs) — no BVH needed here
 @kernel function _area_kernel!(area_out, coords,
                                 nodes_quad, nodes_tri,
                                 elem_family, elem_node_idx,
@@ -330,18 +366,24 @@ function _dunavant_rule(nquad::Int, ::Type{T}) where T
 end
 
 """
-    launch_vf_kernel!(gpu_arrays, backend; groupsize=16) -> (raw_out, area_out)
+    launch_vf_kernel!(gpu_arrays, backend; groupsize=16, flat_bvh=nothing)
+        -> (raw_out, area_out)
 
 Launch the view factor kernel on `backend` and return device arrays
 `raw_out` (N×N) and `area_out` (N,).
+
+Pass a `FlatBVH` as `flat_bvh` to enable obstruction checking; omit or pass
+`nothing` for unobstructed computation.
 """
-function launch_vf_kernel!(ga, backend; groupsize::Int=16)
+function launch_vf_kernel!(ga, backend;
+                            groupsize::Int = 16,
+                            flat_bvh       = nothing)
     N      = ga.N
     FloatT = ga.FloatT
     raw_out  = fill!(similar(ga.coords, FloatT, N, N), zero(FloatT))
-    area_out = fill!(similar(ga.coords, FloatT, N), zero(FloatT))
+    area_out = fill!(similar(ga.coords, FloatT, N),    zero(FloatT))
 
-    # Area kernel: 1-D, one thread per element
+    # Area kernel: 1-D, one thread per element (no BVH needed)
     area_kern! = _area_kernel!(backend, groupsize)
     area_kern!(area_out, ga.coords,
                ga.nodes_quad, ga.nodes_tri,
@@ -351,6 +393,25 @@ function launch_vf_kernel!(ga, backend; groupsize::Int=16)
                N;
                ndrange=N)
 
+    # Prepare BVH arrays for the pair kernel.
+    # When flat_bvh is nothing we pass zero-size dummies and use_bvh=false so
+    # the compiler can eliminate the entire shadow-ray branch.
+    if flat_bvh !== nothing
+        bvh_lo      = flat_bvh.nodes_lo
+        bvh_hi      = flat_bvh.nodes_hi
+        bvh_meta    = flat_bvh.nodes_meta
+        bvh_tri_idx = flat_bvh.tri_idx
+        bvh_tris    = flat_bvh.tri_verts
+        use_bvh     = true
+    else
+        bvh_lo      = similar(ga.coords, FloatT, 3, 0)
+        bvh_hi      = similar(ga.coords, FloatT, 3, 0)
+        bvh_meta    = similar(ga.elem_node_idx, Int32, 4, 0)
+        bvh_tri_idx = similar(ga.elem_node_idx, Int32, 0)
+        bvh_tris    = similar(ga.coords, FloatT, 3, 3, 0)
+        use_bvh     = false
+    end
+
     # Pair kernel: 2-D, one thread per (i,j) with i<j
     pair_kern! = _vf_pair_kernel!(backend, (groupsize, groupsize))
     pair_kern!(raw_out, area_out, ga.coords,
@@ -358,7 +419,10 @@ function launch_vf_kernel!(ga, backend; groupsize::Int=16)
                ga.elem_family, ga.elem_node_idx,
                ga.quad_pts, ga.quad_wts,
                ga.tri_pts,  ga.tri_wts,
-               N;
+               N,
+               bvh_lo, bvh_hi, bvh_meta,
+               bvh_tri_idx, bvh_tris,
+               use_bvh;
                ndrange=(N, N))
 
     KernelAbstractions.synchronize(backend)
