@@ -151,11 +151,12 @@ end
                                    coords,
                                    nodes_quad, nodes_tri,
                                    elem_family, elem_node_idx,
+                                   elem_group,
                                    quad_pts, quad_wts,
                                    tri_pts,  tri_wts,
                                    N,
                                    bvh_lo, bvh_hi, bvh_meta,
-                                   bvh_tri_idx, bvh_tris,
+                                   bvh_tri_idx, bvh_tris, bvh_tri_group,
                                    use_bvh::Bool)
     i, j = @index(Global, NTuple)
 
@@ -164,6 +165,9 @@ end
     T   = eltype(coords)
     nq  = length(quad_wts)
     nqt = length(tri_wts)
+
+    gi = Int32(elem_group[i])
+    gj = Int32(elem_group[j])
 
     Fij = zero(T)
     Ai  = zero(T)
@@ -213,10 +217,10 @@ end
                 if rlen > T(1e-15)
                     inv_r = T(1) / rlen
                     if gpu_intersect_bvh(bvh_lo, bvh_hi, bvh_meta,
-                                         bvh_tri_idx, bvh_tris,
+                                         bvh_tri_idx, bvh_tris, bvh_tri_group,
                                          xi[1], xi[2], xi[3],
                                          rx * inv_r, ry * inv_r, rz * inv_r,
-                                         rlen)
+                                         rlen, gi, gj)
                         K = zero(T)
                     end
                 end
@@ -289,13 +293,15 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
     coords_cpu = FloatT.(mesh.coords)
     N          = length(elems)
 
-    # Separate elements by family, record per-element family and local index
+    # Separate elements by family, record per-element family, local index, and group
     quad_node_lists = Vector{Vector{Int32}}()
     tri_node_lists  = Vector{Vector{Int32}}()
     elem_family     = Vector{Int8}(undef, N)
     elem_node_idx   = Vector{Int32}(undef, N)
+    elem_group_cpu  = Vector{Int32}(undef, N)
 
     for (i, el) in enumerate(elems)
+        elem_group_cpu[i] = Int32(el.group)
         if el.family === :quad
             push!(quad_node_lists, Int32.(el.nodes))
             elem_family[i]   = Int8(0)
@@ -331,6 +337,7 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
         nodes_tri     = ArrayT(nodes_tri_cpu),
         elem_family   = ArrayT(elem_family),
         elem_node_idx = ArrayT(elem_node_idx),
+        elem_group    = ArrayT(elem_group_cpu),
         quad_pts      = ArrayT(quad_pts_cpu),
         quad_wts      = ArrayT(quad_wts_cpu),
         tri_pts       = ArrayT(tri_rule.points),
@@ -397,19 +404,21 @@ function launch_vf_kernel!(ga, backend;
     # When flat_bvh is nothing we pass zero-size dummies and use_bvh=false so
     # the compiler can eliminate the entire shadow-ray branch.
     if flat_bvh !== nothing
-        bvh_lo      = flat_bvh.nodes_lo
-        bvh_hi      = flat_bvh.nodes_hi
-        bvh_meta    = flat_bvh.nodes_meta
-        bvh_tri_idx = flat_bvh.tri_idx
-        bvh_tris    = flat_bvh.tri_verts
-        use_bvh     = true
+        bvh_lo        = flat_bvh.nodes_lo
+        bvh_hi        = flat_bvh.nodes_hi
+        bvh_meta      = flat_bvh.nodes_meta
+        bvh_tri_idx   = flat_bvh.tri_idx
+        bvh_tris      = flat_bvh.tri_verts
+        bvh_tri_group = flat_bvh.tri_group
+        use_bvh       = true
     else
-        bvh_lo      = similar(ga.coords, FloatT, 3, 0)
-        bvh_hi      = similar(ga.coords, FloatT, 3, 0)
-        bvh_meta    = similar(ga.elem_node_idx, Int32, 4, 0)
-        bvh_tri_idx = similar(ga.elem_node_idx, Int32, 0)
-        bvh_tris    = similar(ga.coords, FloatT, 3, 3, 0)
-        use_bvh     = false
+        bvh_lo        = similar(ga.coords, FloatT, 3, 0)
+        bvh_hi        = similar(ga.coords, FloatT, 3, 0)
+        bvh_meta      = similar(ga.elem_group, Int32, 4, 0)
+        bvh_tri_idx   = similar(ga.elem_group, Int32, 0)
+        bvh_tris      = similar(ga.coords, FloatT, 3, 3, 0)
+        bvh_tri_group = similar(ga.elem_group, Int32, 0)
+        use_bvh       = false
     end
 
     # Pair kernel: 2-D, one thread per (i,j) with i<j
@@ -417,11 +426,12 @@ function launch_vf_kernel!(ga, backend;
     pair_kern!(raw_out, area_out, ga.coords,
                ga.nodes_quad, ga.nodes_tri,
                ga.elem_family, ga.elem_node_idx,
+               ga.elem_group,
                ga.quad_pts, ga.quad_wts,
                ga.tri_pts,  ga.tri_wts,
                N,
                bvh_lo, bvh_hi, bvh_meta,
-               bvh_tri_idx, bvh_tris,
+               bvh_tri_idx, bvh_tris, bvh_tri_group,
                use_bvh;
                ndrange=(N, N))
 

@@ -13,6 +13,9 @@
 # tri_idx    : Int32  (N,)     — sorted triangle permutation (from BVH build)
 # tri_verts  : FloatT (3,3,N)  — triangle vertices; dim1=vertex, dim2=xyz,
 #                                 dim3=triangle (same layout as BVHTree.tri_soup)
+# tri_group  : Int32  (N,)     — physical group tag of each triangle, indexed
+#                                 by original (pre-permutation) triangle index,
+#                                 so bvh_tri_group[tidx] matches bvh_tris[:,:,tidx]
 # ---------------------------------------------------------------------------
 
 module GPUBVH
@@ -28,18 +31,24 @@ export FlatBVH, build_flat_bvh, build_flat_bvh_from_mesh, gpu_intersect_bvh
 # ---------------------------------------------------------------------------
 
 struct FlatBVH{FA, IA}
-    nodes_lo   :: FA   # (3, M) FloatT
-    nodes_hi   :: FA   # (3, M) FloatT
-    nodes_meta :: IA   # (4, M) Int32
-    tri_idx    :: IA   # (N,)   Int32
+    nodes_lo   :: FA   # (3, M)    FloatT
+    nodes_hi   :: FA   # (3, M)    FloatT
+    nodes_meta :: IA   # (4, M)    Int32
+    tri_idx    :: IA   # (N,)      Int32
     tri_verts  :: FA   # (3, 3, N) FloatT
+    tri_group  :: IA   # (N,)      Int32 — physical group tag per triangle
 end
 
 # ---------------------------------------------------------------------------
 # CPU BVHTree → FlatBVH (transfers to device via ArrayT)
+#
+# tri_group_cpu must be a Vector{Int32} of length size(cpu_bvh.tri_soup, 3),
+# indexed by original triangle index (before BVH permutation).
 # ---------------------------------------------------------------------------
 
-function build_flat_bvh(cpu_bvh::BVHTree, ::Type{FloatT}, ArrayT) where FloatT
+function build_flat_bvh(cpu_bvh::BVHTree,
+                         tri_group_cpu::Vector{Int32},
+                         ::Type{FloatT}, ArrayT) where FloatT
     M = length(cpu_bvh.nodes)
 
     lo_cpu   = Array{FloatT}(undef, 3, M)
@@ -65,6 +74,7 @@ function build_flat_bvh(cpu_bvh::BVHTree, ::Type{FloatT}, ArrayT) where FloatT
         ArrayT(meta_cpu),
         ArrayT(Int32.(cpu_bvh.tri_idx)),
         ArrayT(FloatT.(cpu_bvh.tri_soup)),
+        ArrayT(tri_group_cpu),
     )
 end
 
@@ -73,14 +83,27 @@ end
         -> FlatBVH or nothing
 
 Merge the triangle soups for the given groups, build a CPU BVH, and flatten it
-to device arrays.  Returns `nothing` if no triangle geometry is available.
+to device arrays.  Each triangle carries its physical group tag so that the GPU
+traversal can skip triangles belonging to the emitter or receiver element's group,
+matching the per-pair exclusion behaviour of the CPU path.
+
+Returns `nothing` if no triangle geometry is available for the given groups.
 """
 function build_flat_bvh_from_mesh(mesh, obstruction_groups::Vector{Int},
                                    ::Type{FloatT}, ArrayT) where FloatT
     isempty(obstruction_groups) && return nothing
 
-    soups = [mesh.group_tri_soup[g]
-             for g in obstruction_groups if haskey(mesh.group_tri_soup, g)]
+    soups      = Array{Float64,3}[]
+    group_tags = Int32[]
+
+    for g in obstruction_groups
+        haskey(mesh.group_tri_soup, g) || continue
+        s  = mesh.group_tri_soup[g]
+        nt = size(s, 3)
+        push!(soups, s)
+        append!(group_tags, fill(Int32(g), nt))
+    end
+
     isempty(soups) && return nothing
 
     total  = sum(size(s, 3) for s in soups)
@@ -92,7 +115,7 @@ function build_flat_bvh_from_mesh(mesh, obstruction_groups::Vector{Int},
         t += nt
     end
 
-    return build_flat_bvh(build_bvh(merged), FloatT, ArrayT)
+    return build_flat_bvh(build_bvh(merged), group_tags, FloatT, ArrayT)
 end
 
 # ---------------------------------------------------------------------------
@@ -103,18 +126,26 @@ end
 # compiles cleanly for CUDA and Metal.
 #
 # Arguments:
-#   bvh_lo / bvh_hi / bvh_meta / bvh_tri_idx / bvh_tris  — FlatBVH arrays
-#   ox,oy,oz   — ray origin
-#   dx,dy,dz   — ray direction (unit vector)
-#   t_max      — maximum hit distance (the segment length)
+#   bvh_lo / bvh_hi / bvh_meta / bvh_tri_idx / bvh_tris — FlatBVH geometry
+#   bvh_tri_group  — group tag per triangle (indexed by original triangle index)
+#   ox,oy,oz       — ray origin
+#   dx,dy,dz       — ray direction (unit vector)
+#   t_max          — maximum hit distance (segment length)
+#   group_i        — physical group tag of the emitter element
+#   group_j        — physical group tag of the receiver element
 #
-# Returns true if any obstruction triangle is hit between t_eps and t_max.
+# Triangles whose group matches group_i or group_j are skipped, replicating
+# the per-pair exclusion behaviour of the CPU path.
+#
+# Returns true if any non-excluded triangle is hit between t_eps and t_max.
 # ---------------------------------------------------------------------------
 
-@inline function gpu_intersect_bvh(bvh_lo, bvh_hi, bvh_meta, bvh_tri_idx, bvh_tris,
+@inline function gpu_intersect_bvh(bvh_lo, bvh_hi, bvh_meta,
+                                    bvh_tri_idx, bvh_tris, bvh_tri_group,
                                     ox::T, oy::T, oz::T,
                                     dx::T, dy::T, dz::T,
-                                    t_max::T)::Bool where T
+                                    t_max::T,
+                                    group_i::Int32, group_j::Int32)::Bool where T
     inv_dx = T(1) / dx
     inv_dy = T(1) / dy
     inv_dz = T(1) / dz
@@ -145,6 +176,10 @@ end
             tri_start = Int(bvh_meta[3, nidx])
             for k in tri_start : tri_start + tri_count - 1
                 tidx = Int(bvh_tri_idx[k])
+
+                # Skip triangles belonging to the emitter or receiver group
+                tg = bvh_tri_group[tidx]
+                (tg == group_i || tg == group_j) && continue
 
                 # Vertex coordinates (dim1=vertex, dim2=xyz, dim3=tri)
                 v0x = T(bvh_tris[1, 1, tidx])

@@ -39,8 +39,7 @@ Arguments
 - `nquad`               : Gauss points per direction (nquad² per element pair)
 - `obstruction_groups`  : physical group tags that may occlude rays. The source
                           and destination groups are automatically excluded per
-                          pair on CPU. On GPU the full merged obstruction BVH
-                          is used (no per-pair exclusion of source/destination).
+                          pair on both CPU and GPU backends.
 - `backend`             : a KernelAbstractions backend.
                           `CPU()` (default)  — multi-threaded CPU via Threads.@threads
                           `CUDABackend()`    — NVIDIA GPU (requires CUDA.jl loaded)

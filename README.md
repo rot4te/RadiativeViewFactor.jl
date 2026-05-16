@@ -89,9 +89,7 @@ result = compute_view_factors(mesh; nquad=4,
                               obstruction_groups=[3, 4])
 ```
 
-The BVH is built on the CPU from the merged triangle soups of the specified groups, then uploaded to the device as flat typed arrays. Each GPU thread traverses the BVH independently using thread-local stack memory.
-
-> **CPU vs GPU obstruction difference:** on CPU, each emitter–receiver pair excludes the source and destination groups from the obstruction BVH. On GPU a single merged BVH over all `obstruction_groups` is used, so a surface that appears in both `obstruction_groups` and as a radiating surface will self-occlude on GPU.
+The BVH is built on the CPU from the merged triangle soups of the specified groups, then uploaded to the device as flat typed arrays. Each GPU thread traverses the BVH independently using thread-local stack memory. Each triangle carries its physical group tag, so rays between elements of groups i and j automatically skip any obstruction triangle that belongs to group i or j — the same per-pair exclusion behaviour as the CPU path.
 
 ## API Reference
 
@@ -151,9 +149,10 @@ The double integral is evaluated numerically using Gauss–Legendre quadrature
 on each Quad8 element (mapped from [-1,1]²) or Dunavant quadrature on each
 Tri6 element. On CPU the BVH is built once per obstruction-group set and reused across all
 element pairs in that set. On GPU the BVH is flattened to plain typed arrays
-(AABB bounds, node metadata, triangle vertices) and uploaded to device memory
-once before the kernel launch; each thread traverses it using a fixed-size
-thread-local stack.
+(AABB bounds, node metadata, triangle vertices, per-triangle group tags) and
+uploaded to device memory once before the kernel launch; each thread traverses
+it using a fixed-size thread-local stack and skips any triangle whose group tag
+matches the emitter or receiver element's group.
 
 ## Mesh Requirements
 
