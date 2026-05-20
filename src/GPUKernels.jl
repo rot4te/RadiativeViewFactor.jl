@@ -173,11 +173,36 @@ end
 
     Fij = zero(T)
     Ai  = zero(T)
+    Aj  = zero(T)
 
-    # ---- outer loop: quadrature over element i ----
-    fi = elem_family[i]   # 0 = quad, 1 = tri
+    fi     = elem_family[i]
+    fj     = elem_family[j]
     ni_idx = elem_node_idx[i]
+    nj_idx = elem_node_idx[j]
 
+    # ---- compute element areas independently ----
+    for p in 1:(fi == 0 ? nq : nqt)
+        if fi == 0
+            ξ, η = quad_pts[1,p], quad_pts[2,p];  wi = quad_wts[p]
+            _, _, dAi = _quad8_point_and_jac(coords, nodes_quad, Int(ni_idx), ξ, η)
+        else
+            ξ, η = tri_pts[1,p], tri_pts[2,p];  wi = tri_wts[p]
+            _, _, dAi = _tri6_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
+        end
+        Ai += wi * dAi
+    end
+    for q in 1:(fj == 0 ? nq : nqt)
+        if fj == 0
+            ξj, ηj = quad_pts[1,q], quad_pts[2,q];  wj = quad_wts[q]
+            _, _, dAj = _quad8_point_and_jac(coords, nodes_quad, Int(nj_idx), ξj, ηj)
+        else
+            ξj, ηj = tri_pts[1,q], tri_pts[2,q];  wj = tri_wts[q]
+            _, _, dAj = _tri6_point_and_jac(coords, nodes_tri, Int(nj_idx), ξj, ηj)
+        end
+        Aj += wj * dAj
+    end
+
+    # ---- double quadrature loop for view factor integral ----
     for p in 1:(fi == 0 ? nq : nqt)
         if fi == 0
             ξ, η   = quad_pts[1,p], quad_pts[2,p]
@@ -189,13 +214,7 @@ end
             xi, nni, dAi = _tri6_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
         end
 
-        Ai += wi * dAi
-
-        # ---- inner loop: quadrature over element j ----
-        fj = elem_family[j]
-        nj_idx = elem_node_idx[j]
         inner = zero(T)
-
         for q in 1:(fj == 0 ? nq : nqt)
             if fj == 0
                 ξj, ηj = quad_pts[1,q], quad_pts[2,q]
@@ -209,8 +228,6 @@ end
 
             K = _vf_kernel(xi, nni, xj, nnj)
 
-            # Shadow-ray test: only when K > 0 (both cosines positive) so we
-            # avoid BVH traversal for sample pairs that contribute nothing.
             if use_bvh && K > zero(T)
                 rx = xj[1] - xi[1]
                 ry = xj[2] - xi[2]
@@ -236,11 +253,13 @@ end
 
     raw_out[i, j] = Fij
     raw_out[j, i] = Fij
-    # Write area_out[i]: all threads in row i compute the same Ai so any
-    # write gives the correct result. Writing unconditionally is safe and
-    # ensures every element's area is recorded (the j==i+1 approach missed
-    # element N since no thread has j==N+1).
+    # Write area_out[i] and area_out[j]: all threads in row i compute the
+    # same Ai, and all threads in column j compute the same Aj, so any write
+    # gives the correct result. Writing both ensures every element's area is
+    # covered — element N never appears as i (no j > N exists) but always
+    # appears as j (thread i=N-1, j=N covers it).
     area_out[i] = Ai
+    area_out[j] = Aj
 
     end # if i <= N && j <= N && i < j
 end
@@ -257,6 +276,8 @@ Flatten MeshData into plain typed arrays ready for GPU transfer.
 `FloatT` is `Float32` (Metal) or `Float64` (CUDA/CPU).
 """
 function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
+    import_mods = Base.loaded_modules   # just for readability below
+
     elems      = mesh.surface_elems
     coords_cpu = FloatT.(mesh.coords)
     N          = length(elems)

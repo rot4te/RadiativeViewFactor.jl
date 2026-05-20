@@ -12,7 +12,8 @@ using KernelAbstractions
 import ..MeshIO:     MeshData
 import ..GPUBVH:     build_flat_bvh_from_mesh
 import ..GPUKernels: build_gpu_arrays, launch_vf_kernel!
-import ..Assembly:   ViewFactorResult, _aggregate
+import ..Results:    ViewFactorResult, _aggregate
+import ..Assembly:   register_gpu_hook!
 
 export compute_view_factors_gpu
 
@@ -84,5 +85,11 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     return ViewFactorResult(F_elem, area_f64, F_group, A_group,
                              group_tags, group_names)
 end
+
+
+# Register this module's compute function as the GPU dispatch target in
+# Assembly.  This runs when GPUAssembly is first loaded (after Assembly),
+# completing the dependency loop without a circular import at module-load time.
+register_gpu_hook!(compute_view_factors_gpu)
 
 end # module GPUAssembly

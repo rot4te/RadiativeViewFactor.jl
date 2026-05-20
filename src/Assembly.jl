@@ -9,22 +9,15 @@ import ..MeshIO:           MeshData, SurfaceElement
 import ..Quadrature:       gauss_legendre_2d
 import ..BVH:              BVHTree, build_bvh
 import ..ViewFactorKernel: element_pair_view_factor
+import ..Results:          ViewFactorResult, _aggregate, aggregate_by_group,
+                           check_reciprocity, check_closure
 
-export ViewFactorResult,
-       compute_view_factors,
+export compute_view_factors,
        aggregate_by_group,
        check_reciprocity,
        check_closure,
-       _aggregate   # exported for GPUAssembly
-
-struct ViewFactorResult
-    F_elem      :: Matrix{Float64}
-    A_elem      :: Vector{Float64}
-    F_group     :: Matrix{Float64}
-    A_group     :: Vector{Float64}
-    group_tags  :: Vector{Int}
-    group_names :: Vector{String}
-end
+       ViewFactorResult,
+       register_gpu_hook!
 
 """
     compute_view_factors(mesh; nquad=4, obstruction_groups=Int[],
@@ -36,16 +29,17 @@ Compute all element-pair view factors.
 Arguments
 ---------
 - `mesh`                : `MeshData` from `load_mesh`
-- `nquad`               : Gauss points per direction (nquad² per element pair)
+- `nquad`               : Gauss points per direction (nquad² per element pair
+                          for surface elements; nquad points for curve elements)
 - `obstruction_groups`  : physical group tags that may occlude rays. The source
                           and destination groups are automatically excluded per
                           pair on both CPU and GPU backends.
 - `backend`             : a KernelAbstractions backend.
-                          `CPU()` (default)  — multi-threaded CPU via Threads.@threads
-                          `CUDABackend()`    — NVIDIA GPU (requires CUDA.jl loaded)
-                          `MetalBackend()`   — Apple GPU (requires Metal.jl loaded)
+                          `CPU()` (default)  — multi-threaded via Threads.@threads
+                          `CUDABackend()`    — NVIDIA GPU (requires CUDA.jl)
+                          `MetalBackend()`   — Apple GPU (requires Metal.jl)
 - `self_vf`             : include self view factors (curved elements). CPU only.
-- `verbose`             : print progress
+- `verbose`             : print progress and row-sum diagnostics
 """
 function compute_view_factors(mesh               ::MeshData;
                                nquad             ::Int          = 4,
@@ -57,14 +51,18 @@ function compute_view_factors(mesh               ::MeshData;
     backend isa Type && (backend = backend())
 
     if !(backend isa CPU)
+        if mesh.mesh_dim == 1
+            error("GPU backend does not support curve meshes (mesh_dim=1). " *
+                  "Use the CPU backend for 2D per-unit-depth view factors.")
+        end
         ArrayT = _gpu_array_type(backend)
         FloatT = _gpu_float_type(backend)
-        return Main.RadiativeViewFactor.GPUAssembly.compute_view_factors_gpu(
-            mesh, nquad, backend, FloatT, ArrayT;
-            obstruction_groups=obstruction_groups, verbose=verbose)
+        return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
+                                  obstruction_groups, verbose)
     end
 
-    return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose)
+    return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose,
+                         mesh.mesh_dim)
 end
 
 # ---------------------------------------------------------------------------
@@ -75,7 +73,8 @@ function _compute_cpu(mesh              ::MeshData,
                        nquad            ::Int,
                        obstruction_groups::Vector{Int},
                        self_vf          ::Bool,
-                       verbose          ::Bool)::ViewFactorResult
+                       verbose          ::Bool,
+                       mesh_dim         ::Int = 2)::ViewFactorResult
 
     elems  = mesh.surface_elems
     coords = mesh.coords
@@ -94,7 +93,11 @@ function _compute_cpu(mesh              ::MeshData,
                      for g in active if haskey(mesh.group_tri_soup, g)]
             isempty(soups) && return nothing
             total  = sum(size(s, 3) for s in soups)
-            merged = Array{Float64,3}(undef, 3, 3, total)
+            # Segment soups are (3,2,N); triangle soups are (3,3,N).
+            # build_bvh only requires size(soup,3) and the vertex data,
+            # so both layouts work transparently.
+            dim2   = size(first(soups), 2)
+            merged = Array{Float64,3}(undef, 3, dim2, total)
             t = 0
             for s in soups
                 nt = size(s, 3)
@@ -115,7 +118,7 @@ function _compute_cpu(mesh              ::MeshData,
 
     for i in 1:N
         _, Ai     = element_pair_view_factor(coords, elems[i], elems[i],
-                                              nquad, nothing)
+                                              nquad, nothing, mesh_dim)
         A_elem[i] = Ai
     end
 
@@ -126,7 +129,7 @@ function _compute_cpu(mesh              ::MeshData,
             gj  = elems[j].group
             bvh = get_bvh(gi, gj)
             integ, _ = element_pair_view_factor(coords, elems[i], elems[j],
-                                                 nquad, bvh)
+                                                 nquad, bvh, mesh_dim)
             raw_integral[i, j] = integ
             raw_integral[j, i] = integ
         end
@@ -151,67 +154,35 @@ end
 
 # ---------------------------------------------------------------------------
 # GPU backend registry
-# Backends register themselves via these functions in their extension modules.
+# Default methods — overridden by ext/ modules when backends are loaded.
+# _gpu_compute_hook is set by GPUAssembly.register_gpu_hook!() which is
+# called from the main module after all submodules are included.
 # ---------------------------------------------------------------------------
 
-# Default methods — overridden by ext/ modules when backends are loaded
 _gpu_array_type(backend) =
     error("No GPU array type registered for $(typeof(backend)). " *
           "Load CUDA.jl (for CUDABackend) or Metal.jl (for MetalBackend).")
 _gpu_float_type(backend) =
     error("No GPU float type registered for $(typeof(backend)).")
 
-# ---------------------------------------------------------------------------
-# Aggregation (also used by GPUAssembly)
-# ---------------------------------------------------------------------------
+# Mutable ref so GPUAssembly can register itself without a circular import
+const _GPU_HOOK_REF = Ref{Any}(nothing)
 
-function _aggregate(mesh, F_elem, A_elem)
-    gtags  = sort(collect(keys(mesh.group_tags)))
-    gnames = [mesh.group_tags[t] for t in gtags]
-    G      = length(gtags)
-
-    A_group = zeros(Float64, G)
-    for (k, tag) in enumerate(gtags)
-        for ei in mesh.group_elems[tag]
-            A_group[k] += A_elem[ei]
-        end
-    end
-
-    F_group = zeros(Float64, G, G)
-    for (gi, tagi) in enumerate(gtags)
-        for ei in mesh.group_elems[tagi]
-            for (gj, tagj) in enumerate(gtags)
-                Σ = sum(F_elem[ei, ej] for ej in mesh.group_elems[tagj])
-                F_group[gi, gj] += A_elem[ei] * Σ
-            end
-        end
-        F_group[gi, :] ./= A_group[gi]
-    end
-
-    return gtags, gnames, F_group, A_group
+function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
+                            obstruction_groups, verbose)
+    _GPU_HOOK_REF[] === nothing &&
+        error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
+    return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
+                             obstruction_groups=obstruction_groups,
+                             verbose=verbose)
 end
 
-function aggregate_by_group(result::ViewFactorResult, mesh::MeshData)
-    tags, names, Fg, Ag = _aggregate(mesh, result.F_elem, result.A_elem)
-    return Fg, Ag, tags, names
-end
+"""
+    register_gpu_hook!(f)
 
-function check_reciprocity(result::ViewFactorResult; tol::Float64=1e-4)::Bool
-    F = result.F_elem; A = result.A_elem; N = size(F, 1)
-    max_err = 0.0
-    for i in 1:N, j in i+1:N
-        err = abs(A[i]*F[i,j] - A[j]*F[j,i]) / max(A[i]*F[i,j], 1e-30)
-        max_err = max(max_err, err)
-    end
-    println("Reciprocity max relative error: $max_err")
-    return max_err < tol
-end
-
-function check_closure(result::ViewFactorResult; tol::Float64=1e-3)::Bool
-    row_sums = vec(sum(result.F_elem, dims=2))
-    println("Row sums: min=$(round(minimum(row_sums),digits=6)), " *
-            "max=$(round(maximum(row_sums),digits=6))")
-    return maximum(row_sums) <= 1.0 + tol
-end
+Called by `GPUAssembly` at load time to register `compute_view_factors_gpu`
+as the GPU dispatch target.  This avoids a circular module import.
+"""
+register_gpu_hook!(f) = (_GPU_HOOK_REF[] = f)
 
 end # module Assembly

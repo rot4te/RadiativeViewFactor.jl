@@ -16,7 +16,7 @@ module BVH
 using StaticArrays
 using LinearAlgebra
 
-export BVHTree, build_bvh, intersect_ray_bvh
+export BVHTree, build_bvh, intersect_ray_bvh, intersect_seg_bvh
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -79,17 +79,18 @@ function build_bvh(tri_soup::Array{Float64,3})::BVHTree
 end
 
 function _triangle_aabb(tri_soup::Array{Float64,3}, tidx::Int)::AABB
-    lo = SVector(
-        min(tri_soup[1,1,tidx], tri_soup[2,1,tidx], tri_soup[3,1,tidx]),
-        min(tri_soup[1,2,tidx], tri_soup[2,2,tidx], tri_soup[3,2,tidx]),
-        min(tri_soup[1,3,tidx], tri_soup[2,3,tidx], tri_soup[3,3,tidx]),
-    )
-    hi = SVector(
-        max(tri_soup[1,1,tidx], tri_soup[2,1,tidx], tri_soup[3,1,tidx]),
-        max(tri_soup[1,2,tidx], tri_soup[2,2,tidx], tri_soup[3,2,tidx]),
-        max(tri_soup[1,3,tidx], tri_soup[2,3,tidx], tri_soup[3,3,tidx]),
-    )
-    return AABB(lo, hi)
+    # Works for both triangle soups (3,3,N) and segment soups (3,2,N):
+    # loop over however many vertices/endpoints axis 2 contains.
+    nv   = size(tri_soup, 2)
+    lox  = tri_soup[1, 1, tidx];  hix = lox
+    loy  = tri_soup[2, 1, tidx];  hiy = loy
+    loz  = tri_soup[3, 1, tidx];  hiz = loz
+    for v in 2:nv
+        x = tri_soup[1, v, tidx];  lox = min(lox,x);  hix = max(hix,x)
+        y = tri_soup[2, v, tidx];  loy = min(loy,y);  hiy = max(hiy,y)
+        z = tri_soup[3, v, tidx];  loz = min(loz,z);  hiz = max(hiz,z)
+    end
+    return AABB(SVector(lox, loy, loz), SVector(hix, hiy, hiz))
 end
 
 function _merge_aabb(a::AABB, b::AABB)::AABB
@@ -97,11 +98,14 @@ function _merge_aabb(a::AABB, b::AABB)::AABB
 end
 
 function _centroid(tri_soup::Array{Float64,3}, tidx::Int)::SVector{3,Float64}
-    SVector(
-        (tri_soup[1,1,tidx] + tri_soup[2,1,tidx] + tri_soup[3,1,tidx]) / 3,
-        (tri_soup[1,2,tidx] + tri_soup[2,2,tidx] + tri_soup[3,2,tidx]) / 3,
-        (tri_soup[1,3,tidx] + tri_soup[2,3,tidx] + tri_soup[3,3,tidx]) / 3,
-    )
+    nv = size(tri_soup, 2)
+    cx = 0.0;  cy = 0.0;  cz = 0.0
+    for v in 1:nv
+        cx += tri_soup[1, v, tidx]
+        cy += tri_soup[2, v, tidx]
+        cz += tri_soup[3, v, tidx]
+    end
+    SVector(cx/nv, cy/nv, cz/nv)
 end
 
 """Recursively build BVH; appends nodes to `nodes` and returns node index."""
@@ -240,6 +244,78 @@ function intersect_ray_bvh(bvh      ::BVHTree,
         else
             sp += 1;  stack[sp] = node.left
             sp += 1;  stack[sp] = node.right
+        end
+    end
+    return false
+end
+
+
+# ---------------------------------------------------------------------------
+# 2-D ray–segment intersection and BVH traversal for curve meshes
+# ---------------------------------------------------------------------------
+
+"""
+    _seg_blocks_ray(xi, xj, v0, v1; tol=1e-8) -> Bool
+
+Return true if the 2-D line segment v0→v1 blocks the ray xi→xj.
+Only the x and y components are used (z is ignored).
+Uses 2-D line-line intersection via Cramer's rule; both segments are
+parameterised and checked for interior intersection (0 < s,t < 1).
+"""
+@inline function _seg_blocks_ray(xi::SVector{3,Float64}, xj::SVector{3,Float64},
+                                  v0::SVector{3,Float64}, v1::SVector{3,Float64};
+                                  tol::Float64 = 1e-8)::Bool
+    dx = xj[1]-xi[1];  dy = xj[2]-xi[2]   # ray direction (xy only)
+    ex = v1[1]-v0[1];  ey = v1[2]-v0[2]   # segment direction
+    denom = dx*ey - dy*ex
+    abs(denom) < tol && return false        # parallel
+    fx = v0[1]-xi[1];  fy = v0[2]-xi[2]
+    s  = (fx*ey - fy*ex) / denom           # parameter along ray
+    t  = (fx*dy - fy*dx) / denom           # parameter along segment
+    return tol < s < 1.0-tol && tol < t < 1.0-tol
+end
+
+"""
+    intersect_seg_bvh(bvh, x_i, x_j) -> Bool
+
+Return true if the 2-D segment from x_i to x_j is blocked by any segment
+in `bvh`. The BVH must have been built from a segment soup (3, 2, N_segs);
+only xy-components are used.
+"""
+function intersect_seg_bvh(bvh::BVHTree,
+                             x_i::SVector{3,Float64},
+                             x_j::SVector{3,Float64})::Bool
+    # Bounding box of the ray for quick node rejection
+    ray_xlo = min(x_i[1], x_j[1]);  ray_xhi = max(x_i[1], x_j[1])
+    ray_ylo = min(x_i[2], x_j[2]);  ray_yhi = max(x_i[2], x_j[2])
+
+    stack    = zeros(Int, 64)
+    stack[1] = 1
+    sp       = 1
+
+    @inbounds while sp > 0
+        nidx = stack[sp]; sp -= 1
+        node = bvh.nodes[nidx]
+
+        # 2-D AABB overlap (ignore z)
+        (node.aabb.lo[1] > ray_xhi || node.aabb.hi[1] < ray_xlo ||
+         node.aabb.lo[2] > ray_yhi || node.aabb.hi[2] < ray_ylo) && continue
+
+        if node.left == 0  # leaf
+            for k in node.tri_start : node.tri_start + node.tri_count - 1
+                tidx = bvh.tri_idx[k]
+                # Segment soup: (3, 2, N) — axis 1=xyz, axis 2=endpoint, axis 3=seg
+                v0 = SVector(bvh.tri_soup[1, 1, tidx],
+                              bvh.tri_soup[2, 1, tidx],
+                              0.0)
+                v1 = SVector(bvh.tri_soup[1, 2, tidx],
+                              bvh.tri_soup[2, 2, tidx],
+                              0.0)
+                _seg_blocks_ray(x_i, x_j, v0, v1) && return true
+            end
+        else
+            sp += 1; stack[sp] = node.left
+            sp += 1; stack[sp] = node.right
         end
     end
     return false
