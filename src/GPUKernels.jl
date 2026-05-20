@@ -8,8 +8,9 @@
 # The outer loop over element pairs (i,j) is mapped to a 2-D GPU grid.
 # Each thread independently computes the full double quadrature loop for
 # its assigned pair — this is embarrassingly parallel with no inter-thread
-# communication and no atomic operations except for the area accumulation
-# (which is handled by only writing A_out[i] from threads where j==i+1).
+# communication. Each thread writes area_out[i]; since all threads in row i
+# compute the same Ai value, the unconditional write is safe (last-write-wins
+# gives the correct result and avoids the need for a separate area kernel).
 #
 # Obstruction support
 # -------------------
@@ -39,6 +40,7 @@ using StaticArrays
 using LinearAlgebra: cross, dot
 
 import ..GPUBVH: gpu_intersect_bvh, FlatBVH
+import ..Quadrature: gauss_legendre_2d
 
 export build_gpu_arrays, launch_vf_kernel!
 
@@ -171,11 +173,36 @@ end
 
     Fij = zero(T)
     Ai  = zero(T)
+    Aj  = zero(T)
 
-    # ---- outer loop: quadrature over element i ----
-    fi = elem_family[i]   # 0 = quad, 1 = tri
+    fi     = elem_family[i]
+    fj     = elem_family[j]
     ni_idx = elem_node_idx[i]
+    nj_idx = elem_node_idx[j]
 
+    # ---- compute element areas independently ----
+    for p in 1:(fi == 0 ? nq : nqt)
+        if fi == 0
+            ξ, η = quad_pts[1,p], quad_pts[2,p];  wi = quad_wts[p]
+            _, _, dAi = _quad8_point_and_jac(coords, nodes_quad, Int(ni_idx), ξ, η)
+        else
+            ξ, η = tri_pts[1,p], tri_pts[2,p];  wi = tri_wts[p]
+            _, _, dAi = _tri6_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
+        end
+        Ai += wi * dAi
+    end
+    for q in 1:(fj == 0 ? nq : nqt)
+        if fj == 0
+            ξj, ηj = quad_pts[1,q], quad_pts[2,q];  wj = quad_wts[q]
+            _, _, dAj = _quad8_point_and_jac(coords, nodes_quad, Int(nj_idx), ξj, ηj)
+        else
+            ξj, ηj = tri_pts[1,q], tri_pts[2,q];  wj = tri_wts[q]
+            _, _, dAj = _tri6_point_and_jac(coords, nodes_tri, Int(nj_idx), ξj, ηj)
+        end
+        Aj += wj * dAj
+    end
+
+    # ---- double quadrature loop for view factor integral ----
     for p in 1:(fi == 0 ? nq : nqt)
         if fi == 0
             ξ, η   = quad_pts[1,p], quad_pts[2,p]
@@ -187,13 +214,7 @@ end
             xi, nni, dAi = _tri6_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
         end
 
-        Ai += wi * dAi
-
-        # ---- inner loop: quadrature over element j ----
-        fj = elem_family[j]
-        nj_idx = elem_node_idx[j]
         inner = zero(T)
-
         for q in 1:(fj == 0 ? nq : nqt)
             if fj == 0
                 ξj, ηj = quad_pts[1,q], quad_pts[2,q]
@@ -207,8 +228,6 @@ end
 
             K = _vf_kernel(xi, nni, xj, nnj)
 
-            # Shadow-ray test: only when K > 0 (both cosines positive) so we
-            # avoid BVH traversal for sample pairs that contribute nothing.
             if use_bvh && K > zero(T)
                 rx = xj[1] - xi[1]
                 ry = xj[2] - xi[2]
@@ -234,45 +253,15 @@ end
 
     raw_out[i, j] = Fij
     raw_out[j, i] = Fij
-    # Only write area from the j=i+1 thread to avoid races; all give same value
-    j == i + 1 && (area_out[i] = Ai)
+    # Write area_out[i] and area_out[j]: all threads in row i compute the
+    # same Ai, and all threads in column j compute the same Aj, so any write
+    # gives the correct result. Writing both ensures every element's area is
+    # covered — element N never appears as i (no j > N exists) but always
+    # appears as j (thread i=N-1, j=N covers it).
+    area_out[i] = Ai
+    area_out[j] = Aj
 
     end # if i <= N && j <= N && i < j
-end
-
-# Area-only kernel for the diagonal (self-pairs) — no BVH needed here
-@kernel function _area_kernel!(area_out, coords,
-                                nodes_quad, nodes_tri,
-                                elem_family, elem_node_idx,
-                                quad_pts, quad_wts,
-                                tri_pts, tri_wts,
-                                N)
-    i = @index(Global, Linear)
-
-    if i <= N
-
-    T  = eltype(coords)
-    nq = length(quad_wts)
-    fi = elem_family[i]
-    ni_idx = elem_node_idx[i]
-    Ai = zero(T)
-
-    for p in 1:(fi == 0 ? nq : length(tri_wts))
-        if fi == 0
-            ξ, η  = quad_pts[1,p], quad_pts[2,p]
-            wi    = quad_wts[p]
-            _, _, dAi = _quad8_point_and_jac(coords, nodes_quad, Int(ni_idx), ξ, η)
-        else
-            ξ, η  = tri_pts[1,p], tri_pts[2,p]
-            wi    = tri_wts[p]
-            _, _, dAi = _tri6_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
-        end
-        Ai += wi * dAi
-    end
-
-    area_out[i] = Ai
-
-    end # if i <= N
 end
 
 # ---------------------------------------------------------------------------
@@ -322,8 +311,7 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
         reduce(hcat, tri_node_lists)  : zeros(Int32, 6, 0)
 
     # Quadrature rules
-    using_mod = Main.RadiativeViewFactor   # access parent module's Quadrature
-    gl_rule   = using_mod.Quadrature.gauss_legendre_2d(nquad)
+    gl_rule   = gauss_legendre_2d(nquad)
     quad_pts_cpu = FloatT.(gl_rule.points)
     quad_wts_cpu = FloatT.(gl_rule.weights)
 
@@ -376,8 +364,11 @@ end
     launch_vf_kernel!(gpu_arrays, backend; groupsize=16, flat_bvh=nothing)
         -> (raw_out, area_out)
 
-Launch the view factor kernel on `backend` and return device arrays
-`raw_out` (N×N) and `area_out` (N,).
+Launch the view factor pair kernel on `backend`.
+
+Returns device arrays `raw_out` (N×N, raw double integrals) and `area_out`
+(N, element areas).  Both are filled by the single pair kernel — no separate
+area kernel is needed.
 
 Pass a `FlatBVH` as `flat_bvh` to enable obstruction checking; omit or pass
 `nothing` for unobstructed computation.
@@ -389,16 +380,6 @@ function launch_vf_kernel!(ga, backend;
     FloatT = ga.FloatT
     raw_out  = fill!(similar(ga.coords, FloatT, N, N), zero(FloatT))
     area_out = fill!(similar(ga.coords, FloatT, N),    zero(FloatT))
-
-    # Area kernel: 1-D, one thread per element (no BVH needed)
-    area_kern! = _area_kernel!(backend, groupsize)
-    area_kern!(area_out, ga.coords,
-               ga.nodes_quad, ga.nodes_tri,
-               ga.elem_family, ga.elem_node_idx,
-               ga.quad_pts, ga.quad_wts,
-               ga.tri_pts,  ga.tri_wts,
-               N;
-               ndrange=N)
 
     # Prepare BVH arrays for the pair kernel.
     # When flat_bvh is nothing we pass zero-size dummies and use_bvh=false so

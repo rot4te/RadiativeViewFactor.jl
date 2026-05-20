@@ -1,21 +1,36 @@
 # src/GPUBVH.jl
 # ---------------------------------------------------------------------------
 # GPU-friendly BVH: flattens the CPU BVHTree into plain typed arrays that can
-# be transferred to any KernelAbstractions device, plus the @inline traversal
-# function called from inside GPU kernels.
+# be transferred to any KernelAbstractions device, plus the @inline stackless
+# traversal function called from inside GPU kernels.
 #
 # Data layout
 # -----------
 # nodes_lo   : FloatT (3, M)   — AABB lower bounds per node
 # nodes_hi   : FloatT (3, M)   — AABB upper bounds per node
-# nodes_meta : Int32  (4, M)   — [left, right, tri_start, tri_count] per node
-#                                 left == 0 iff the node is a leaf
+# nodes_meta : Int32  (5, M)   — per node:
+#                [1] left       — left child index (0 = leaf)
+#                [2] right      — right child index
+#                [3] tri_start  — first index into tri_idx (leaf only)
+#                [4] tri_count  — number of triangles (leaf only; 0 = interior)
+#                [5] miss_link  — next node to visit on AABB miss, or 0 = done
 # tri_idx    : Int32  (N,)     — sorted triangle permutation (from BVH build)
-# tri_verts  : FloatT (3,3,N)  — triangle vertices; dim1=vertex, dim2=xyz,
-#                                 dim3=triangle (same layout as BVHTree.tri_soup)
-# tri_group  : Int32  (N,)     — physical group tag of each triangle, indexed
-#                                 by original (pre-permutation) triangle index,
-#                                 so bvh_tri_group[tidx] matches bvh_tris[:,:,tidx]
+# tri_verts  : FloatT (3,3,N)  — triangle vertices [vertex, xyz, tri]
+# tri_group  : Int32  (N,)     — physical group tag per triangle (pre-permutation)
+#
+# Stackless traversal
+# -------------------
+# The miss_link of each node is the index of the next node to visit after
+# completely skipping (or finishing) this node's subtree in a depth-first
+# traversal.  Interior nodes are visited by following left_child on a hit and
+# miss_link on a miss; leaf nodes test their triangles then follow miss_link.
+# No thread-local stack is needed, eliminating MVector register pressure.
+#
+# Miss link assignment invariant:
+#   miss_link(node) = first node visited after node's subtree in DFS order
+#                   = right sibling of nearest ancestor for which this node
+#                     is in the left subtree; 0 if none exists.
+# This is computed in one recursive pass during build_flat_bvh.
 # ---------------------------------------------------------------------------
 
 module GPUBVH
@@ -27,45 +42,85 @@ import ..BVH: BVHTree, build_bvh
 export FlatBVH, build_flat_bvh, build_flat_bvh_from_mesh, gpu_intersect_bvh
 
 # ---------------------------------------------------------------------------
-# Flat BVH struct
+# Flat BVH struct — one type parameter per field for device-array compatibility
 # ---------------------------------------------------------------------------
 
-struct FlatBVH{FA, IA}
-    nodes_lo   :: FA   # (3, M)    FloatT
-    nodes_hi   :: FA   # (3, M)    FloatT
-    nodes_meta :: IA   # (4, M)    Int32
-    tri_idx    :: IA   # (N,)      Int32
-    tri_verts  :: FA   # (3, 3, N) FloatT
-    tri_group  :: IA   # (N,)      Int32 — physical group tag per triangle
+struct FlatBVH{A1, A2, A3, A4, A5, A6}
+    nodes_lo   :: A1   # (3, M)    FloatT
+    nodes_hi   :: A2   # (3, M)    FloatT
+    nodes_meta :: A3   # (5, M)    Int32
+    tri_idx    :: A4   # (N,)      Int32
+    tri_verts  :: A5   # (3, 3, N) FloatT
+    tri_group  :: A6   # (N,)      Int32
 end
 
 # ---------------------------------------------------------------------------
-# CPU BVHTree → FlatBVH (transfers to device via ArrayT)
-#
-# tri_group_cpu must be a Vector{Int32} of length size(cpu_bvh.tri_soup, 3),
-# indexed by original triangle index (before BVH permutation).
+# Miss-link computation (CPU side, called during flattening)
 # ---------------------------------------------------------------------------
 
-function build_flat_bvh(cpu_bvh::BVHTree,
+"""
+    _assign_miss_links!(miss_links, nodes, node_idx, next_node)
+
+Recursively assign miss links to all nodes in the subtree rooted at `node_idx`.
+`next_node` is the DFS-order successor of this entire subtree (0 = end of tree).
+
+Call as: `_assign_miss_links!(miss_links, cpu_bvh.nodes, 1, 0)`
+"""
+function _assign_miss_links!(miss_links::Vector{Int32},
+                              nodes,
+                              node_idx ::Int,
+                              next_node::Int)
+    miss_links[node_idx] = Int32(next_node)
+    nd = nodes[node_idx]
+    if nd.left != 0   # interior node
+        # After exhausting the left subtree, visit the right child
+        _assign_miss_links!(miss_links, nodes, nd.left,  nd.right)
+        # After exhausting the right subtree, go to this node's successor
+        _assign_miss_links!(miss_links, nodes, nd.right, next_node)
+    end
+    # Leaf nodes: miss_link already set above; no children to recurse into
+end
+
+# ---------------------------------------------------------------------------
+# CPU BVHTree → FlatBVH
+# ---------------------------------------------------------------------------
+
+"""
+    build_flat_bvh(cpu_bvh, tri_group_cpu, FloatT, ArrayT) -> FlatBVH
+
+Flatten a CPU `BVHTree` to plain typed device arrays.
+
+`tri_group_cpu` is a `Vector{Int32}` of length `size(cpu_bvh.tri_soup, 3)`,
+giving the physical group tag of each triangle indexed by its original
+(pre-permutation) index.
+
+Miss links are computed here and stored in row 5 of `nodes_meta`.
+"""
+function build_flat_bvh(cpu_bvh     ::BVHTree,
                          tri_group_cpu::Vector{Int32},
                          ::Type{FloatT}, ArrayT) where FloatT
     M = length(cpu_bvh.nodes)
 
     lo_cpu   = Array{FloatT}(undef, 3, M)
     hi_cpu   = Array{FloatT}(undef, 3, M)
-    meta_cpu = Array{Int32}(undef,  4, M)
+    meta_cpu = Array{Int32}(undef,  5, M)   # row 5 = miss_link
+
+    # Compute miss links for all nodes in one recursive pass
+    miss_links = Vector{Int32}(undef, M)
+    _assign_miss_links!(miss_links, cpu_bvh.nodes, 1, 0)
 
     for (k, nd) in enumerate(cpu_bvh.nodes)
-        lo_cpu[1,k] = FloatT(nd.aabb.lo[1])
-        lo_cpu[2,k] = FloatT(nd.aabb.lo[2])
-        lo_cpu[3,k] = FloatT(nd.aabb.lo[3])
-        hi_cpu[1,k] = FloatT(nd.aabb.hi[1])
-        hi_cpu[2,k] = FloatT(nd.aabb.hi[2])
-        hi_cpu[3,k] = FloatT(nd.aabb.hi[3])
+        lo_cpu[1,k]   = FloatT(nd.aabb.lo[1])
+        lo_cpu[2,k]   = FloatT(nd.aabb.lo[2])
+        lo_cpu[3,k]   = FloatT(nd.aabb.lo[3])
+        hi_cpu[1,k]   = FloatT(nd.aabb.hi[1])
+        hi_cpu[2,k]   = FloatT(nd.aabb.hi[2])
+        hi_cpu[3,k]   = FloatT(nd.aabb.hi[3])
         meta_cpu[1,k] = Int32(nd.left)
         meta_cpu[2,k] = Int32(nd.right)
         meta_cpu[3,k] = Int32(nd.tri_start)
         meta_cpu[4,k] = Int32(nd.tri_count)
+        meta_cpu[5,k] = miss_links[k]
     end
 
     return FlatBVH(
@@ -82,14 +137,14 @@ end
     build_flat_bvh_from_mesh(mesh, obstruction_groups, FloatT, ArrayT)
         -> FlatBVH or nothing
 
-Merge the triangle soups for the given groups, build a CPU BVH, and flatten it
-to device arrays.  Each triangle carries its physical group tag so that the GPU
-traversal can skip triangles belonging to the emitter or receiver element's group,
-matching the per-pair exclusion behaviour of the CPU path.
+Merge triangle soups for the given groups, build a CPU BVH, and flatten it
+to device arrays. Each triangle carries its physical group tag so the GPU
+traversal can skip triangles belonging to the emitter or receiver group.
 
-Returns `nothing` if no triangle geometry is available for the given groups.
+Returns `nothing` if no triangle geometry exists for the given groups.
 """
-function build_flat_bvh_from_mesh(mesh, obstruction_groups::Vector{Int},
+function build_flat_bvh_from_mesh(mesh,
+                                   obstruction_groups::Vector{Int},
                                    ::Type{FloatT}, ArrayT) where FloatT
     isempty(obstruction_groups) && return nothing
 
@@ -119,26 +174,30 @@ function build_flat_bvh_from_mesh(mesh, obstruction_groups::Vector{Int},
 end
 
 # ---------------------------------------------------------------------------
-# GPU-safe BVH ray traversal
+# Stackless GPU BVH traversal
 #
-# Designed to be called from inside a @kernel body.  Uses a fixed-size
-# MVector stack (on-thread local memory) and only scalar indexing, so it
-# compiles cleanly for CUDA and Metal.
+# Called from inside @kernel bodies. Uses only scalar registers — no MVector,
+# no thread-local stack memory. The miss_link (nodes_meta row 5) encodes the
+# DFS successor of each node, so traversal is a simple linear walk:
 #
-# Arguments:
-#   bvh_lo / bvh_hi / bvh_meta / bvh_tri_idx / bvh_tris — FlatBVH geometry
-#   bvh_tri_group  — group tag per triangle (indexed by original triangle index)
-#   ox,oy,oz       — ray origin
-#   dx,dy,dz       — ray direction (unit vector)
-#   t_max          — maximum hit distance (segment length)
-#   group_i        — physical group tag of the emitter element
-#   group_j        — physical group tag of the receiver element
+#   AABB hit  + interior → descend into left child
+#   AABB hit  + leaf     → test triangles, then follow miss_link
+#   AABB miss            → follow miss_link (skip entire subtree)
 #
-# Triangles whose group matches group_i or group_j are skipped, replicating
-# the per-pair exclusion behaviour of the CPU path.
+# Arguments
+# ---------
+#   bvh_lo / bvh_hi / bvh_meta / bvh_tri_idx / bvh_tris / bvh_tri_group
+#       — FlatBVH fields (passed individually for GPU kernel compatibility)
+#   ox, oy, oz   — ray origin
+#   dx, dy, dz   — ray direction (unit vector)
+#   t_max        — segment length (maximum hit distance)
+#   group_i/j    — emitter/receiver group tags; triangles in these groups
+#                  are skipped to replicate the CPU per-pair exclusion logic
 #
-# Returns true if any non-excluded triangle is hit between t_eps and t_max.
+# Returns true if any non-excluded triangle is hit in (t_eps, t_max).
 # ---------------------------------------------------------------------------
+
+const _GPU_T_EPS = 1f-6   # Float32 literal; cast to T inside the function
 
 @inline function gpu_intersect_bvh(bvh_lo, bvh_hi, bvh_meta,
                                     bvh_tri_idx, bvh_tris, bvh_tri_group,
@@ -146,17 +205,15 @@ end
                                     dx::T, dy::T, dz::T,
                                     t_max::T,
                                     group_i::Int32, group_j::Int32)::Bool where T
+
     inv_dx = T(1) / dx
     inv_dy = T(1) / dy
     inv_dz = T(1) / dz
-    t_eps  = T(1e-6)     # offset to avoid self-hit at the segment endpoints
+    t_eps  = T(_GPU_T_EPS)
 
-    stack    = MVector{64, Int32}(undef)
-    stack[1] = Int32(1)
-    sp       = 1
+    nidx = 1   # start at root
 
-    @inbounds while sp > 0
-        nidx = Int(stack[sp]); sp -= 1
+    @inbounds while nidx > 0
 
         # Ray–AABB slab test
         t1x = (T(bvh_lo[1, nidx]) - ox) * inv_dx
@@ -168,60 +225,61 @@ end
 
         tentry = max(min(t1x, t2x), min(t1y, t2y), min(t1z, t2z), T(0))
         texit  = min(max(t1x, t2x), max(t1y, t2y), max(t1z, t2z), t_max)
-        tentry > texit && continue
 
-        tri_count = Int(bvh_meta[4, nidx])
+        if tentry <= texit   # AABB hit
 
-        if tri_count > 0   # leaf node
-            tri_start = Int(bvh_meta[3, nidx])
-            for k in tri_start : tri_start + tri_count - 1
-                tidx = Int(bvh_tri_idx[k])
+            tri_count = Int(bvh_meta[4, nidx])
 
-                # Skip triangles belonging to the emitter or receiver group
-                tg = bvh_tri_group[tidx]
-                (tg == group_i || tg == group_j) && continue
+            if tri_count > 0   # leaf node — test triangles
+                tri_start = Int(bvh_meta[3, nidx])
+                for k in tri_start : tri_start + tri_count - 1
+                    tidx = Int(bvh_tri_idx[k])
 
-                # Vertex coordinates (dim1=vertex, dim2=xyz, dim3=tri)
-                v0x = T(bvh_tris[1, 1, tidx])
-                v0y = T(bvh_tris[1, 2, tidx])
-                v0z = T(bvh_tris[1, 3, tidx])
-                v1x = T(bvh_tris[2, 1, tidx])
-                v1y = T(bvh_tris[2, 2, tidx])
-                v1z = T(bvh_tris[2, 3, tidx])
-                v2x = T(bvh_tris[3, 1, tidx])
-                v2y = T(bvh_tris[3, 2, tidx])
-                v2z = T(bvh_tris[3, 3, tidx])
+                    # Skip emitter/receiver group triangles
+                    tg = bvh_tri_group[tidx]
+                    (tg == group_i || tg == group_j) && continue
 
-                # Möller–Trumbore (scalar, no SVector allocations)
-                e1x = v1x - v0x;  e1y = v1y - v0y;  e1z = v1z - v0z
-                e2x = v2x - v0x;  e2y = v2y - v0y;  e2z = v2z - v0z
+                    # Triangle vertices [vertex 1..3, xyz 1..3, tri]
+                    v0x = T(bvh_tris[1, 1, tidx]);  v0y = T(bvh_tris[1, 2, tidx]);  v0z = T(bvh_tris[1, 3, tidx])
+                    v1x = T(bvh_tris[2, 1, tidx]);  v1y = T(bvh_tris[2, 2, tidx]);  v1z = T(bvh_tris[2, 3, tidx])
+                    v2x = T(bvh_tris[3, 1, tidx]);  v2y = T(bvh_tris[3, 2, tidx]);  v2z = T(bvh_tris[3, 3, tidx])
 
-                hx = dy * e2z - dz * e2y
-                hy = dz * e2x - dx * e2z
-                hz = dx * e2y - dy * e2x
-                a  = e1x * hx + e1y * hy + e1z * hz
-                abs(a) < T(1e-10) && continue
+                    # Möller–Trumbore (fully scalar, no SVector allocations)
+                    e1x = v1x-v0x;  e1y = v1y-v0y;  e1z = v1z-v0z
+                    e2x = v2x-v0x;  e2y = v2y-v0y;  e2z = v2z-v0z
 
-                f  = T(1) / a
-                sx = ox - v0x;  sy = oy - v0y;  sz = oz - v0z
-                u  = f * (sx * hx + sy * hy + sz * hz)
-                (u < T(0) || u > T(1)) && continue
+                    hx = dy*e2z - dz*e2y
+                    hy = dz*e2x - dx*e2z
+                    hz = dx*e2y - dy*e2x
+                    a  = e1x*hx + e1y*hy + e1z*hz
+                    abs(a) < T(1e-10) && continue
 
-                qx = sy * e1z - sz * e1y
-                qy = sz * e1x - sx * e1z
-                qz = sx * e1y - sy * e1x
-                v  = f * (dx * qx + dy * qy + dz * qz)
-                (v < T(0) || u + v > T(1)) && continue
+                    f  = T(1) / a
+                    sx = ox-v0x;  sy = oy-v0y;  sz = oz-v0z
+                    u  = f * (sx*hx + sy*hy + sz*hz)
+                    (u < T(0) || u > T(1)) && continue
 
-                t  = f * (e2x * qx + e2y * qy + e2z * qz)
-                t > t_eps && t < t_max && return true
+                    qx = sy*e1z - sz*e1y
+                    qy = sz*e1x - sx*e1z
+                    qz = sx*e1y - sy*e1x
+                    v  = f * (dx*qx + dy*qy + dz*qz)
+                    (v < T(0) || u+v > T(1)) && continue
+
+                    t = f * (e2x*qx + e2y*qy + e2z*qz)
+                    t > t_eps && t < t_max && return true
+                end
+                # Leaf exhausted — follow miss link
+                nidx = Int(bvh_meta[5, nidx])
+
+            else   # interior node — descend into left child
+                nidx = Int(bvh_meta[1, nidx])
             end
 
-        else   # interior node — push children
-            sp += 1;  stack[sp] = bvh_meta[1, nidx]   # left
-            sp += 1;  stack[sp] = bvh_meta[2, nidx]   # right
+        else   # AABB miss — skip entire subtree
+            nidx = Int(bvh_meta[5, nidx])
         end
-    end
+
+    end   # while nidx > 0
 
     return false
 end
