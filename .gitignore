@@ -10,3 +10,5 @@ Manifest.toml
 
 # disallow .claude extension trafficking
 .claude
+
+testmesh
