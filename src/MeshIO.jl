@@ -6,7 +6,7 @@ using Statistics: mean
 using StaticArrays
 import Gmsh: gmsh
 
-export MeshData, SurfaceElement, load_mesh
+
 
 # ---------------------------------------------------------------------------
 # Supported element types
@@ -29,7 +29,7 @@ struct SurfaceElement
     nodes  :: Vector{Int}
     group  :: Int
     family :: Symbol        # :line3 | :tri | :quad
-end
+end; export SurfaceElement
 
 """
     MeshData
@@ -53,7 +53,7 @@ struct MeshData
     group_elems    :: Dict{Int, Vector{Int}}
     group_tri_soup :: Dict{Int, Array{Float64,3}}
     mesh_dim       :: Int
-end
+end; export MeshData
 
 """
     load_mesh(filename; surface_dim=2, verbose=true) -> MeshData
@@ -67,8 +67,9 @@ named physical groups.
                              Line3 (Gmsh type 8, requires `Mesh.ElementOrder = 2`).
 """
 function load_mesh(filename::AbstractString;
-                   surface_dim::Int  = 2,
-                   verbose    ::Bool = true)::MeshData
+                   surface_dim    ::Int  = 2,
+                   reverse_normals::Bool = false,
+                   verbose        ::Bool = true)::MeshData
     isfile(filename) || error("Mesh file not found: $filename")
     surface_dim ∈ (1, 2) || error("surface_dim must be 1 or 2, got $surface_dim")
     gmsh.initialize()
@@ -81,6 +82,10 @@ function load_mesh(filename::AbstractString;
             _read_surface_elements(surface_dim, group_tags, tag2idx, verbose)
         if surface_dim == 1
             _orient_line3_normals!(surface_elems, group_elems, coords, verbose)
+        end
+        if reverse_normals
+            _reverse_all_normals!(surface_elems, surface_dim)
+            verbose && println("  All normals reversed.")
         end
         group_tri_soup  = _build_group_obs_soups(coords, surface_elems,
                                                   group_elems, surface_dim)
@@ -102,7 +107,7 @@ function load_mesh(filename::AbstractString;
     finally
         gmsh.finalize()
     end
-end
+end; export load_mesh
 
 function _read_nodes()
     node_tags, coords_flat, _ = gmsh.model.mesh.getNodes()
@@ -278,19 +283,52 @@ function _build_curve_to_surface_centroid(
         )
     end
 
-    # For each curve entity, find the first surface that shares nodes with it
+    # For each curve entity, find all adjacent surfaces (those sharing nodes).
+    # If multiple surfaces are adjacent (e.g. an internal boundary between a
+    # transfinite layer and a background mesh), pick the one whose centroid is
+    # closest to the curve's own centroid — this is the surface the curve
+    # actually borders rather than a distant surface that merely shares a corner.
     result = Dict{Int, SVector{3,Float64}}()
     for ent in all_curve_entities
         cnodes = curve_nodes[ent]
+
+        # Compute curve centroid from its nodes
+        curve_positions = [gmshtag_to_pos[t] for t in cnodes
+                           if haskey(gmshtag_to_pos, t)]
+        isempty(curve_positions) && continue
+        curve_centroid = SVector{3,Float64}(
+            mean(coords[1, p] for p in curve_positions),
+            mean(coords[2, p] for p in curve_positions),
+            mean(coords[3, p] for p in curve_positions),
+        )
+
+        # Collect all adjacent surfaces and their centroids
+        adjacent = Tuple{Int, SVector{3,Float64}}[]
         for (surf, snodes) in surf_node_sets
             if !isempty(intersect(cnodes, snodes))
-                result[ent] = surf_centroids[surf]
-                break
+                push!(adjacent, (surf, surf_centroids[surf]))
             end
         end
-        haskey(result, ent) ||
+
+        if isempty(adjacent)
             @warn "Curve entity $ent shares no nodes with any surface entity. " *
                   "Normal orientation for elements on this curve will not be corrected."
+            continue
+        end
+
+        # Pick the adjacent surface whose centroid is closest to the curve.
+        # For a curve on the boundary of a transfinite layer, the transfinite
+        # surface centroid is much closer than any distant background surface.
+        best_surf_centroid = adjacent[1][2]
+        best_dist = sum((curve_centroid - adjacent[1][2]).^2)
+        for (_, sc) in adjacent[2:end]
+            d = sum((curve_centroid - sc).^2)
+            if d < best_dist
+                best_dist = d
+                best_surf_centroid = sc
+            end
+        end
+        result[ent] = best_surf_centroid
     end
     return result
 end
@@ -430,6 +468,35 @@ function _orient_line3_normals!(surface_elems::Vector{SurfaceElement},
 
     verbose && n_flipped > 0 &&
         println("  Reoriented $n_flipped Line3 element(s) to point toward transfinite surface interior.")
+end
+
+# ---------------------------------------------------------------------------
+# Normal reversal
+# ---------------------------------------------------------------------------
+
+"""
+    _reverse_all_normals!(surface_elems, surface_dim)
+
+Reverse the normal of every element by swapping the node ordering:
+  - Line3  (:line3) : swap nodes 1 ↔ 2 (endpoints); node 3 (midpoint) unchanged
+  - Quad8  (:quad)  : swap nodes 1 ↔ 3 and 5 ↔ 7 (reverses winding)
+  - Tri6   (:tri)   : swap nodes 1 ↔ 3 and 4 ↔ 6 (reverses winding)
+"""
+function _reverse_all_normals!(surface_elems::Vector{SurfaceElement},
+                                surface_dim  ::Int)
+    for (i, el) in enumerate(surface_elems)
+        nodes = copy(el.nodes)
+        if el.family === :line3
+            nodes[1], nodes[2] = nodes[2], nodes[1]
+        elseif el.family === :quad
+            nodes[1], nodes[3] = nodes[3], nodes[1]
+            nodes[5], nodes[7] = nodes[7], nodes[5]
+        elseif el.family === :tri
+            nodes[1], nodes[3] = nodes[3], nodes[1]
+            nodes[4], nodes[6] = nodes[6], nodes[4]
+        end
+        surface_elems[i] = SurfaceElement(nodes, el.group, el.family)
+    end
 end
 
 # ---------------------------------------------------------------------------

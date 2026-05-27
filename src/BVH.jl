@@ -16,7 +16,7 @@ module BVH
 using StaticArrays
 using LinearAlgebra
 
-export BVHTree, build_bvh, intersect_ray_bvh, intersect_seg_bvh
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -52,7 +52,7 @@ struct BVHTree
     nodes    :: Vector{BVHNode}
     tri_idx  :: Vector{Int}
     tri_soup :: Array{Float64, 3}   # 3 × 3 × N  (vertex, coord, tri)
-end
+end; export BVHTree
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -76,7 +76,7 @@ function build_bvh(tri_soup::Array{Float64,3})::BVHTree
     _build_recursive!(nodes, tri_soup, tri_idx, 1, N)
 
     return BVHTree(nodes, tri_idx, tri_soup)
-end
+end; export build_bvh
 
 function _triangle_aabb(tri_soup::Array{Float64,3}, tidx::Int)::AABB
     # Works for both triangle soups (3,3,N) and segment soups (3,2,N):
@@ -247,7 +247,7 @@ function intersect_ray_bvh(bvh      ::BVHTree,
         end
     end
     return false
-end
+end; export intersect_ray_bvh
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +319,6 @@ function intersect_seg_bvh(bvh::BVHTree,
         end
     end
     return false
-end
+end; export intersect_seg_bvh
 
 end # module BVH

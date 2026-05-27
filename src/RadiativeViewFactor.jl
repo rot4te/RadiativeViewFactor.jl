@@ -29,7 +29,17 @@ export load_mesh,
        aggregate_by_group,
        check_reciprocity,
        check_closure,
+       plot_mesh_normals,
        MeshData,
        ViewFactorResult
+
+# Declare the function with no methods here; the extension adds the real method.
+# A fallback on Any gives a helpful error when called without Makie loaded,
+# and does not conflict with the extension's MeshData-typed method.
+function plot_mesh_normals end
+
+plot_mesh_normals(x; kwargs...) =
+    error("plot_mesh_normals requires a Makie backend. " *
+          "Load one first, e.g. `using GLMakie` or `using CairoMakie`.")
 
 end # module

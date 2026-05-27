@@ -11,8 +11,7 @@ using LinearAlgebra
 
 import ..MeshIO: MeshData
 
-export ViewFactorResult, _aggregate, aggregate_by_group,
-       check_reciprocity, check_closure
+
 
 # ---------------------------------------------------------------------------
 # Result container
@@ -40,7 +39,7 @@ struct ViewFactorResult
     A_group     :: Vector{Float64}
     group_tags  :: Vector{Int}
     group_names :: Vector{String}
-end
+end; export ViewFactorResult
 
 # ---------------------------------------------------------------------------
 # Aggregation
@@ -80,7 +79,7 @@ function _aggregate(mesh::MeshData,
     end
 
     return gtags, gnames, F_group, A_group
-end
+end; export _aggregate
 
 """
     aggregate_by_group(result, mesh) -> (F_group, A_group, tags, names)
@@ -91,7 +90,7 @@ Re-aggregate element-level results to group level (useful after modifying
 function aggregate_by_group(result::ViewFactorResult, mesh::MeshData)
     tags, names, Fg, Ag = _aggregate(mesh, result.F_elem, result.A_elem)
     return Fg, Ag, tags, names
-end
+end; export aggregate_by_group
 
 # ---------------------------------------------------------------------------
 # Post-processing checks
@@ -112,7 +111,7 @@ function check_reciprocity(result::ViewFactorResult; tol::Float64=1e-4)::Bool
     end
     println("Reciprocity max relative error: $max_err")
     return max_err < tol
-end
+end; export check_reciprocity
 
 """
     check_closure(result; tol=1e-3) -> Bool
@@ -125,6 +124,6 @@ function check_closure(result::ViewFactorResult; tol::Float64=1e-3)::Bool
     println("Row sums: min=$(round(minimum(row_sums),digits=6)), " *
             "max=$(round(maximum(row_sums),digits=6))")
     return maximum(row_sums) <= 1.0 + tol
-end
+end; export check_closure
 
 end # module Results
