@@ -9,11 +9,12 @@ module GPUAssembly
 using LinearAlgebra
 using KernelAbstractions
 
-import ..MeshIO:     MeshData
-import ..GPUBVH:     build_flat_bvh_from_mesh
-import ..GPUKernels: build_gpu_arrays, launch_vf_kernel!
-import ..Results:    ViewFactorResult, _aggregate
-import ..Assembly:   register_gpu_hook!
+import ..MeshIO:       MeshData
+import ..GPUBVH:       build_flat_bvh_from_mesh
+import ..GPUKernels:   build_gpu_arrays, launch_vf_kernel!
+import ..GPUMCKernels: launch_mc_kernel!
+import ..Results:      ViewFactorResult, _aggregate
+import ..Assembly:     register_gpu_hook!
 
 export compute_view_factors_gpu
 
@@ -34,10 +35,19 @@ function compute_view_factors_gpu(mesh               ::MeshData,
                                    FloatT            ::Type,
                                    ArrayT            ;
                                    obstruction_groups::Vector{Int} = Int[],
-                                   verbose           ::Bool        = true)::ViewFactorResult
+                                   verbose           ::Bool        = true,
+                                   monte_carlo       ::Bool        = false,
+                                   n_samples         ::Int         = 10000)::ViewFactorResult
     N = length(mesh.surface_elems)
-    verbose && println("GPU compute_view_factors: $N elements, nquad=$nquad, ",
-                       "FloatT=$FloatT, backend=$(typeof(backend))")
+    if verbose
+        if monte_carlo
+            println("GPU compute_view_factors: $N elements, n_samples=$n_samples (Monte Carlo), ",
+                    "FloatT=$FloatT, backend=$(typeof(backend))")
+        else
+            println("GPU compute_view_factors: $N elements, nquad=$nquad, ",
+                    "FloatT=$FloatT, backend=$(typeof(backend))")
+        end
+    end
 
     # Flatten mesh data and transfer to device
     verbose && print("  Transferring mesh to device… ")
@@ -58,7 +68,15 @@ function compute_view_factors_gpu(mesh               ::MeshData,
 
     # Launch kernels
     verbose && print("  Running GPU kernel… ")
-    raw_dev, area_dev = launch_vf_kernel!(ga, backend; flat_bvh=flat_bvh)
+    if monte_carlo
+        seed = rand(UInt64)
+        raw_dev, area_dev = launch_mc_kernel!(ga, backend;
+                                               n_samples=n_samples,
+                                               seed=seed,
+                                               flat_bvh=flat_bvh)
+    else
+        raw_dev, area_dev = launch_vf_kernel!(ga, backend; flat_bvh=flat_bvh)
+    end
     verbose && println("done.")
 
     # Copy results back to CPU
