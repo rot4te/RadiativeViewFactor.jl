@@ -39,7 +39,7 @@ using StaticArrays
 
 import ..BVH: BVHTree, build_bvh
 
-export FlatBVH, build_flat_bvh, build_flat_bvh_from_mesh, gpu_intersect_bvh
+
 
 # ---------------------------------------------------------------------------
 # Flat BVH struct — one type parameter per field for device-array compatibility
@@ -52,7 +52,7 @@ struct FlatBVH{A1, A2, A3, A4, A5, A6}
     tri_idx    :: A4   # (N,)      Int32
     tri_verts  :: A5   # (3, 3, N) FloatT
     tri_group  :: A6   # (N,)      Int32
-end
+end; export FlatBVH
 
 # ---------------------------------------------------------------------------
 # Miss-link computation (CPU side, called during flattening)
@@ -131,7 +131,7 @@ function build_flat_bvh(cpu_bvh     ::BVHTree,
         ArrayT(FloatT.(cpu_bvh.tri_soup)),
         ArrayT(tri_group_cpu),
     )
-end
+end; export build_flat_bvh
 
 """
     build_flat_bvh_from_mesh(mesh, obstruction_groups, FloatT, ArrayT)
@@ -171,7 +171,7 @@ function build_flat_bvh_from_mesh(mesh,
     end
 
     return build_flat_bvh(build_bvh(merged), group_tags, FloatT, ArrayT)
-end
+end; export build_flat_bvh_from_mesh
 
 # ---------------------------------------------------------------------------
 # Stackless GPU BVH traversal
@@ -282,6 +282,6 @@ const _GPU_T_EPS = 1f-6   # Float32 literal; cast to T inside the function
     end   # while nidx > 0
 
     return false
-end
+end; export gpu_intersect_bvh
 
 end # module GPUBVH

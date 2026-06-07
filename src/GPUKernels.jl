@@ -403,7 +403,7 @@ function launch_vf_kernel!(ga, backend;
     end
 
     # Pair kernel: 2-D, one thread per (i,j) with i<j
-    pair_kern! = _vf_pair_kernel!(backend, (groupsize, groupsize))
+    pair_kern! = _vf_pair_kernel!(backend, (groupsize, groupsize))::Any
     pair_kern!(raw_out, area_out, ga.coords,
                ga.nodes_quad, ga.nodes_tri,
                ga.elem_family, ga.elem_node_idx,

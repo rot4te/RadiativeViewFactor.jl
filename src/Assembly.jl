@@ -4,11 +4,14 @@ module Assembly
 using LinearAlgebra
 using SparseArrays
 using KernelAbstractions
+using Random
 
 import ..MeshIO:           MeshData, SurfaceElement
 import ..Quadrature:       gauss_legendre_2d
 import ..BVH:              BVHTree, build_bvh
 import ..ViewFactorKernel: element_pair_view_factor
+import ..MCKernel:         element_pair_view_factor_mc
+import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type
 import ..Results:          ViewFactorResult, _aggregate, aggregate_by_group,
                            check_reciprocity, check_closure
 
@@ -39,6 +42,18 @@ Arguments
                           `CUDABackend()`    — NVIDIA GPU (requires CUDA.jl)
                           `MetalBackend()`   — Apple GPU (requires Metal.jl)
 - `self_vf`             : include self view factors (curved elements). CPU only.
+- `monte_carlo`         : if `true`, use Monte Carlo integration instead of
+                          Gauss–Legendre quadrature. Works on all backends.
+- `n_samples`           : number of MC sample pairs per element pair (ignored
+                          when `monte_carlo=false`). Higher values reduce
+                          variance at O(1/√n_samples) cost.
+- `rng`                 : random number generator for the CPU MC path
+                          (default: `Random.default_rng()`). Ignored on GPU.
+- `use_duffy`           : if `true`, use the Sauter–Schwab Duffy transformation
+                          for element pairs that share a vertex or edge, giving
+                          accurate results near corner singularities. CPU only;
+                          applies to Quad8 pairs only (other families use standard
+                          quadrature). Incompatible with `monte_carlo=true`.
 - `verbose`             : print progress and row-sum diagnostics
 """
 function compute_view_factors(mesh               ::MeshData;
@@ -46,9 +61,18 @@ function compute_view_factors(mesh               ::MeshData;
                                obstruction_groups::Vector{Int}  = Int[],
                                backend                          = CPU(),
                                self_vf           ::Bool         = false,
+                               monte_carlo       ::Bool         = false,
+                               n_samples         ::Int          = 10000,
+                               rng               ::AbstractRNG  = Random.default_rng(),
+                               use_duffy         ::Bool         = false,
                                verbose           ::Bool         = true)::ViewFactorResult
 
     backend isa Type && (backend = backend())
+
+    use_duffy && !(backend isa CPU) &&
+        @warn "use_duffy is CPU-only; ignored for GPU backends."
+    use_duffy && monte_carlo &&
+        error("use_duffy and monte_carlo cannot both be true.")
 
     if !(backend isa CPU)
         if mesh.mesh_dim == 1
@@ -58,11 +82,12 @@ function compute_view_factors(mesh               ::MeshData;
         ArrayT = _gpu_array_type(backend)
         FloatT = _gpu_float_type(backend)
         return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
-                                  obstruction_groups, verbose)
+                                  obstruction_groups, verbose,
+                                  monte_carlo, n_samples)
     end
 
     return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose,
-                         mesh.mesh_dim)
+                         mesh.mesh_dim, monte_carlo, n_samples, rng, use_duffy)
 end
 
 # ---------------------------------------------------------------------------
@@ -74,7 +99,11 @@ function _compute_cpu(mesh              ::MeshData,
                        obstruction_groups::Vector{Int},
                        self_vf          ::Bool,
                        verbose          ::Bool,
-                       mesh_dim         ::Int = 2)::ViewFactorResult
+                       mesh_dim         ::Int         = 2,
+                       monte_carlo      ::Bool        = false,
+                       n_samples        ::Int         = 10000,
+                       rng              ::AbstractRNG = Random.default_rng(),
+                       use_duffy        ::Bool        = false)::ViewFactorResult
 
     elems  = mesh.surface_elems
     coords = mesh.coords
@@ -108,7 +137,15 @@ function _compute_cpu(mesh              ::MeshData,
         end
     end
 
-    verbose && println("CPU compute_view_factors: $N elements, nquad=$nquad")
+    if verbose
+        if monte_carlo
+            println("CPU compute_view_factors: $N elements, n_samples=$n_samples (Monte Carlo)")
+        elseif use_duffy
+            println("CPU compute_view_factors: $N elements, nquad=$nquad (Duffy for singular pairs)")
+        else
+            println("CPU compute_view_factors: $N elements, nquad=$nquad")
+        end
+    end
     check_obs && verbose &&
         println("  Obstruction groups: ",
                 [mesh.group_tags[g] for g in obstruction_groups])
@@ -116,24 +153,54 @@ function _compute_cpu(mesh              ::MeshData,
     raw_integral = zeros(Float64, N, N)
     A_elem       = zeros(Float64, N)
 
-    for i in 1:N
-        _, Ai     = element_pair_view_factor(coords, elems[i], elems[i],
-                                              nquad, nothing, mesh_dim)
-        A_elem[i] = Ai
-    end
-
-    Threads.@threads for i in 1:N
-        gi      = elems[i].group
-        j_start = self_vf ? i : i + 1
-        for j in j_start:N
-            gj  = elems[j].group
-            bvh = get_bvh(gi, gj)
-            integ, _ = element_pair_view_factor(coords, elems[i], elems[j],
-                                                 nquad, bvh, mesh_dim)
-            raw_integral[i, j] = integ
-            raw_integral[j, i] = integ
+    if monte_carlo
+        # Each thread needs its own RNG to avoid contention; split from parent rng
+        rngs = [Random.seed!(copy(rng), rand(rng, UInt64)) for _ in 1:Threads.nthreads()]
+        for i in 1:N
+            _, Ai = element_pair_view_factor_mc(coords, elems[i], elems[i],
+                                                 n_samples, nothing, mesh_dim,
+                                                 rngs[1])
+            A_elem[i] = Ai
         end
-        verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
+        Threads.@threads for i in 1:N
+            tid     = Threads.threadid()
+            gi      = elems[i].group
+            j_start = self_vf ? i : i + 1
+            for j in j_start:N
+                gj    = elems[j].group
+                bvh   = get_bvh(gi, gj)
+                integ, _ = element_pair_view_factor_mc(coords, elems[i], elems[j],
+                                                        n_samples, bvh, mesh_dim,
+                                                        rngs[tid])
+                raw_integral[i, j] = integ
+                raw_integral[j, i] = integ
+            end
+            verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
+        end
+    else
+        for i in 1:N
+            _, Ai     = element_pair_view_factor(coords, elems[i], elems[i],
+                                                  nquad, nothing, mesh_dim)
+            A_elem[i] = Ai
+        end
+        Threads.@threads for i in 1:N
+            gi      = elems[i].group
+            j_start = self_vf ? i : i + 1
+            for j in j_start:N
+                gj  = elems[j].group
+                bvh = get_bvh(gi, gj)
+                integ, _ = if use_duffy
+                    element_pair_view_factor_duffy(coords, elems[i], elems[j],
+                                                    nquad, bvh, mesh_dim)
+                else
+                    element_pair_view_factor(coords, elems[i], elems[j],
+                                             nquad, bvh, mesh_dim)
+                end
+                raw_integral[i, j] = integ
+                raw_integral[j, i] = integ
+            end
+            verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
+        end
     end
 
     F_elem = raw_integral ./ reshape(A_elem, N, 1)
@@ -169,12 +236,14 @@ _gpu_float_type(backend) =
 const _GPU_HOOK_REF = Ref{Any}(nothing)
 
 function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
-                            obstruction_groups, verbose)
+                            obstruction_groups, verbose, monte_carlo, n_samples)
     _GPU_HOOK_REF[] === nothing &&
         error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
     return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
                              obstruction_groups=obstruction_groups,
-                             verbose=verbose)
+                             verbose=verbose,
+                             monte_carlo=monte_carlo,
+                             n_samples=n_samples)
 end
 
 """
