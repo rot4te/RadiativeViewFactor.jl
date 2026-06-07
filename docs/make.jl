@@ -6,7 +6,7 @@ makedocs(
     authors  = "Alex Coxe",
     format   = Documenter.HTML(
         prettyurls       = get(ENV, "CI", nothing) == "true",
-        canonical        = "https://rot4te.github.io/RadiativeViewFactor.jl",
+        canonical        = "https://rot4te.github.io/RadiativeViewFactor.jl.git",
         edit_link        = "main",
         assets           = String[],
     ),
