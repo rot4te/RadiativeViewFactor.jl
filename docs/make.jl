@@ -6,7 +6,7 @@ makedocs(
     authors  = "Alex Coxe",
     format   = Documenter.HTML(
         prettyurls       = get(ENV, "CI", nothing) == "true",
-        canonical        = "https://rot4te.github.io/RadiativeViewFactor.git",
+        canonical        = "https://rot4te.github.io/RadiativeViewFactor.jl",
         edit_link        = "main",
         assets           = String[],
     ),
@@ -25,6 +25,7 @@ makedocs(
         "Theory"         => "theory.md",
         "API Reference"  => "api.md",
         "References"     => "references.md",
+        "Citing"         => "citing.md",
     ],
     # Only warn about missing docs for the symbols explicitly listed in @docs
     # blocks; internal helpers without @docs entries are expected and suppressed.
@@ -36,7 +37,7 @@ makedocs(
 # Local builds (`julia --project=docs docs/make.jl`) skip this safely.
 if get(ENV, "CI", nothing) == "true"
     deploydocs(
-        repo      = "github.com/rot4te/RadiativeViewFactor.git",
+        repo      = "github.com/rot4te/RadiativeViewFactor.jl.git",
         target    = "build",
         branch    = "gh-pages",
         devbranch = "main",
