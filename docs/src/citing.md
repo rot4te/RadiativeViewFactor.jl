@@ -8,12 +8,12 @@ generates formatted citations automatically from the `CITATION.cff` file.
 ## BibTeX
 
 ```bibtex
-@software{coxe_radiativeviewfactor_2025,
-  author  = {Coxe, Alex},
+@software{coxe_radiativeviewfactor_2026,
+  author  = {Coxe, Alexander M.},
   title   = {{RadiativeViewFactor.jl}},
   url     = {https://github.com/rot4te/RadiativeViewFactor.jl},
-  version = {0.3.0},
-  year    = {2025}
+  version = {0.5.0},
+  year    = {2026}
 }
 ```
 
