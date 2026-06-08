@@ -13,4 +13,4 @@ Manifest.toml
 
 testmesh
 
-.DS_Store
+*.DS_Store
