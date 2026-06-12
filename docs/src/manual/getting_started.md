@@ -2,9 +2,14 @@
 
 ## Loading a mesh
 
-RadiativeViewFactor.jl reads Gmsh `.msh` files in both v2.2 and v4 format.
-All radiating surfaces must belong to named **Physical Surface** groups (3D) or
-**Physical Curve** groups (2D).
+`load_mesh` reads any format the Gmsh SDK can open — `.msh` (v2.2 and v4),
+`.stl`, `.step`/`.stp`, Nastran, `.med`, legacy `.vtk`, and more — and
+auto-detects XML VTK (`.vtu`) files, which are read through ReadVTK.jl. Meshes
+may be structured or unstructured, with 1st- or 2nd-order elements (or a mix).
+
+Radiating geometry is partitioned by named groups (**Physical Surface** in 3D,
+**Physical Curve** in 2D). Formats without named groups (e.g. STL) fall back to
+a single `"default"` group.
 
 ```julia
 using RadiativeViewFactor
@@ -14,6 +19,14 @@ mesh = load_mesh("geometry.msh")
 
 # 2D planar curve mesh (view factors per unit depth)
 mesh = load_mesh("planar.msh"; surface_dim=1)
+
+# Other formats are detected from the extension
+mesh = load_mesh("part.stl")
+mesh = load_mesh("assembly.step")
+
+# XML VTK (.vtu) requires ReadVTK in scope
+using ReadVTK
+mesh = load_mesh("grid.vtu")
 ```
 
 ## Computing view factors

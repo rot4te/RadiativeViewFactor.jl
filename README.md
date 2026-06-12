@@ -3,23 +3,37 @@
 [![CI](https://github.com/rot4te/RadiativeViewFactor/actions/workflows/CI.yml/badge.svg)](https://github.com/rot4te/RadiativeViewFactor/actions/workflows/CI.yml)
 
 A Julia package for computing **radiative view factors** between arbitrary surfaces
-or curves discretized on 2nd-order meshes generated with [Gmsh](https://gmsh.info/).
+or curves. Meshes may be **structured or unstructured** and **1st- or 2nd-order**;
+any format readable by [Gmsh](https://gmsh.info/) is supported, plus XML VTK
+(`.vtu`) via an optional ReadVTK.jl extension.
 
 ## Features
 
-- Reads Gmsh `.msh` files (v2.2 and v4) via the Gmsh Julia SDK
-- **3D surface meshes** (`surface_dim=2`): Quad8, Quad9 (centre node dropped), and Tri6 elements
-- **2D planar curve meshes** (`surface_dim=1`): Line3 elements; computes view factors per unit depth using the 2D kernel cos θᵢ cos θⱼ / (2r)
-- Groups radiating geometry by **Gmsh physical groups**; view factors reported at both element and group level; rows and columns of `F_group` indexed by `result.group_tags` / `result.group_names`
+- **Structured and unstructured meshes** are both supported. The solver operates
+  on a flat list of elements identified purely by node connectivity — there is no
+  structured-grid (`i,j`) assumption anywhere in assembly, quadrature, or the BVH.
+  Unstructured triangulations (Gmsh's default), structured/transfinite meshes,
+  and mixed-element meshes all work.
+- **Any Gmsh-readable format**: `.msh` (v2.2 and v4), `.stl`, `.step`/`.stp`,
+  Nastran `.bdf`/`.nas`, `.med`, legacy `.vtk`, etc. XML VTK unstructured grids
+  (`.vtu`, XML-form `.vtk`) are auto-detected and read through ReadVTK.jl when
+  `using ReadVTK` is in scope.
+- **1st- and 2nd-order elements**, in any mix within one mesh:
+  - **3D surface meshes** (`surface_dim=2`): Tri3, Quad4 (1st order); Tri6, Quad8,
+    Quad9 (centre node dropped) (2nd order)
+  - **2D planar curve meshes** (`surface_dim=1`): Line2 (1st order), Line3
+    (2nd order); computes view factors per unit depth using the 2D kernel
+    cos θᵢ cos θⱼ / (2r)
+- Groups radiating geometry by **named physical groups**; view factors reported at both element and group level; rows and columns of `F_group` indexed by `result.group_tags` / `result.group_names`. Formats without named groups (e.g. STL, VTK) fall back to a single synthetic `"default"` group, or — for VTK — a per-cell region array
 - **Three integration methods** selectable per call:
   - *Gauss–Legendre quadrature* (default): pre-tabulated for n ≤ 5, Golub–Welsch algorithm for n > 5; Dunavant rules for triangular elements; 1-D Gauss–Legendre for Line3 curve elements
   - *Monte Carlo*: stratified area sampling with O(1/N) variance convergence per element pair; per-thread independent RNG streams on CPU; xorshift64 per-thread PRNG on GPU
   - *Duffy transformation* (`use_duffy=true`): Sauter–Schwab singularity regularization for Quad8 element pairs sharing a vertex (8-region decomposition) or edge (5-region decomposition); falls back to standard quadrature for non-adjacent pairs and non-Quad8 families
 - **Obstruction detection** via ray–triangle (3D) or ray–segment (2D) intersection on an axis-aligned BVH; works on both CPU and GPU backends and with all three integration methods
 - `obstruction_groups` interface: pass physical group tags of potential occluders; source and destination groups are automatically excluded per pair
-- Automatic **normal orientation correction** at load time: for curve meshes (`surface_dim=1`), element normals are oriented to point toward the adjacent transfinite surface interior, determined from mesh element connectivity (works with `.msh` v2.2 and v4)
-- Optional **normal reversal**: `reverse_normals=true` flips all normals; `reverse_groups=[...]` flips specific physical groups only
-- **Mesh visualisation** via an optional Makie extension: load any Makie backend and call `plot_mesh_normals(mesh)` to inspect element geometry and normal directions
+- Automatic **normal orientation correction** for curve meshes (`surface_dim=1`): element normals are oriented toward the adjacent surface interior, determined from **mesh connectivity** (shared nodes + nearest centroid), not CAD topology — so it works for unstructured curve meshes, not only structured/transfinite ones (and with `.msh` v2.2 and v4). For surface meshes (`surface_dim=2`) normals follow element winding, which Gmsh keeps consistent within each surface; opposing surfaces must be wound to face each other (or use `reverse_normals`)
+- Optional **normal reversal**: `reverse_normals=true` flips all element normals at load time
+- **Mesh visualisation** via an optional Plots.jl extension: `using Plots` then `plot_mesh_normals(mesh)` to inspect element geometry and normal directions
 - CPU backend: multi-threaded via `Threads.@threads`
 - GPU backends: NVIDIA (`CUDABackend`, Float64) and Apple Silicon (`MetalBackend`, Float32) via KernelAbstractions.jl; stackless BVH traversal eliminates per-thread stack memory pressure
 - **Reciprocity** and **closure** (row-sum) checks on the assembled matrix
@@ -30,7 +44,7 @@ or curves discretized on 2nd-order meshes generated with [Gmsh](https://gmsh.inf
 RadiativeViewFactor.jl/
 ├── src/
 │   ├── RadiativeViewFactor.jl   # Package entry-point and public exports
-│   ├── MeshIO.jl                # Gmsh mesh loading; element reading; normal orientation
+│   ├── MeshIO.jl                # Mesh loading (Gmsh + VTK routing); element reading; normal orientation
 │   ├── Quadrature.jl            # Gauss–Legendre (1-D and 2-D) and Dunavant rules
 │   ├── Geometry.jl              # Shape functions, normals, Jacobians for all element types
 │   ├── BVH.jl                   # Axis-aligned BVH; triangle and segment soup support
@@ -40,14 +54,15 @@ RadiativeViewFactor.jl/
 │   ├── MCKernel.jl              # CPU Monte Carlo integrator with stratified sampling
 │   ├── Results.jl               # ViewFactorResult, _aggregate, check functions
 │   ├── GPUBVH.jl                # Stackless flat BVH for GPU: build + inline traversal
-│   ├── GPUKernels.jl            # KernelAbstractions deterministic kernels (Quad8 + Tri6)
+│   ├── GPUKernels.jl            # KernelAbstractions deterministic kernels (Quad4/8 + Tri3/6)
 │   ├── GPUMCKernels.jl          # KernelAbstractions Monte Carlo kernel (xorshift64 PRNG)
 │   ├── Assembly.jl              # CPU assembly; integration dispatch; GPU hook registry
 │   └── GPUAssembly.jl           # GPU assembly path; registers GPU hook at load time
 ├── ext/
-│   ├── RadiativeViewFactorCUDAExt.jl    # Registers CUDABackend → CuArray, Float64
-│   ├── RadiativeViewFactorMetalExt.jl  # Registers MetalBackend → MtlArray, Float32
-│   └── RadiativeViewFactorMakieExt.jl  # plot_mesh_normals (any Makie backend)
+│   ├── RadiativeViewFactorCUDAExt.jl     # Registers CUDABackend → CuArray, Float64
+│   ├── RadiativeViewFactorMetalExt.jl    # Registers MetalBackend → MtlArray, Float32
+│   ├── RadiativeViewFactorPlotsExt.jl    # plot_mesh_normals (Plots.jl)
+│   └── RadiativeViewFactorReadVTKExt.jl  # XML VTK (.vtu) loading via ReadVTK.jl
 ├── test/
 │   └── runtests.jl
 └── Project.toml
@@ -98,15 +113,28 @@ result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000,
 ### 2D planar curve mesh (per unit depth)
 
 ```julia
-# Physical Curve groups required; Line3 elements (Mesh.ElementOrder = 2)
+# Physical Curve groups; Line2 (1st-order) or Line3 (2nd-order) elements
 mesh   = load_mesh("planar.msh"; surface_dim=1)
 result = compute_view_factors(mesh; nquad=6)
 # F_group values are view factors per unit depth
 
-# Normal orientation is corrected automatically toward the adjacent
-# transfinite surface interior. Override if needed:
+# Normal orientation is corrected automatically toward the adjacent surface
+# interior (from mesh connectivity, structured or unstructured). If a group
+# comes out facing the wrong way, flip all normals at load time:
 mesh = load_mesh("planar.msh"; surface_dim=1, reverse_normals=true)
-mesh = load_mesh("planar.msh"; surface_dim=1, reverse_groups=[2, 5])
+```
+
+### Other formats (STL, STEP, VTK, …)
+
+```julia
+# Any format Gmsh can open is detected from the extension:
+mesh = load_mesh("part.stl")        # no named groups → single "default" group
+mesh = load_mesh("assembly.step")
+
+# XML VTK unstructured grids (.vtu) need ReadVTK loaded:
+using ReadVTK
+mesh = load_mesh("grid.vtu")                       # auto-detected
+mesh = load_vtu("grid.vtu"; group_field="RegionId") # per-cell region → groups
 ```
 
 ### Obstruction detection
@@ -155,7 +183,7 @@ fig = plot_mesh_normals(mesh;
         show_indices  = true,
         group_colors  = Dict(1=>:red, 2=>:blue))
 
-save("normals.png", fig)   # requires CairoMakie
+savefig(fig, "normals.png")
 ```
 
 > **Full API documentation** is available at the [package documentation site](https://rot4te.github.io/RadiativeViewFactor.jl).
@@ -205,19 +233,34 @@ On GPU, each thread uses an independent xorshift64 pseudo-random number stream s
 
 ## Mesh Requirements
 
+Meshes may be **structured or unstructured** — the solver only needs element node
+connectivity. Both **1st- and 2nd-order** elements are accepted, and they may be
+mixed within a single mesh. Any [Gmsh-readable format](https://gmsh.info/) works;
+XML VTK (`.vtu`) works through ReadVTK.jl.
+
 ### Surface meshes (`surface_dim=2`)
 
-- 2nd-order elements: `Quad8` (type 16), `Quad9` (type 10, centre node dropped), or `Tri6` (type 9)
-- Radiating surfaces in **Physical Surface** groups; obstructors in separate Physical Surface groups
-- `Mesh.ElementOrder = 2` before meshing
+| Order | Triangle | Quadrilateral |
+|---|---|---|
+| 1st | `Tri3` (Gmsh type 2) | `Quad4` (type 3) |
+| 2nd | `Tri6` (type 9) | `Quad8` (type 16), `Quad9` (type 10, centre node dropped) |
+
+- Radiating surfaces in named groups (**Physical Surface** in Gmsh); obstructors in separate groups. Formats without named groups get a single `"default"` group.
+- Element normals follow node winding, which Gmsh keeps consistent within each surface. **Opposing surfaces must be wound to face each other**; use `reverse_normals=true` to flip all normals at load time if a mesh comes in back-to-front.
 
 ### Curve meshes (`surface_dim=1`)
 
-- `Line3` elements (Gmsh type 8); `Mesh.ElementOrder = 2` before meshing
-- Radiating curves in **Physical Curve** groups
-- Normal orientation corrected automatically; use `reverse_normals` or `reverse_groups` if needed
+| Order | Line |
+|---|---|
+| 1st | `Line2` (Gmsh type 1) |
+| 2nd | `Line3` (type 8) |
+
+- Radiating curves in named groups (**Physical Curve** in Gmsh).
+- Normal orientation is corrected automatically toward the adjacent surface interior, computed from mesh connectivity — so it works for unstructured curve meshes, not just structured/transfinite ones. Use `reverse_normals=true` to flip all normals if needed.
 
 ```gmsh
+// Example Gmsh setup. Mesh.ElementOrder = 1 (default) gives Line2/Tri3/Quad4;
+// set it to 2 for Line3/Tri6/Quad8. Structured meshing is optional.
 Mesh.ElementOrder = 2;
 Physical Curve("emitter")     = {1};
 Physical Curve("receiver")    = {2};
@@ -285,3 +328,4 @@ The following works informed the numerical methods in this package:
 | `CUDA` *(optional weak dep)* | NVIDIA GPU backend |
 | `Metal` *(optional weak dep)* | Apple Silicon GPU backend |
 | `Plots` *(optional weak dep)* | Mesh visualisation via `plot_mesh_normals` |
+| `ReadVTK` *(optional weak dep)* | Loading XML VTK (`.vtu`) unstructured grids |

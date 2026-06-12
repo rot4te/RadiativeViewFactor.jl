@@ -48,10 +48,9 @@ savefig(fig, "normals.png")
 ## Interpreting the output
 
 Each element is drawn as:
-- A line (Line3) or edge outline (Quad8, Tri6) in the group colour
+- A line (Line2, Line3) or edge outline (Tri3, Quad4, Tri6, Quad8) in the group colour
 - An arrow at the element centre pointing in the outward normal direction
 
 Arrows pointing toward the opposing surface indicate correct orientation.
-Arrows pointing away indicate a winding error — use `reverse_normals` or
-`reverse_groups` in [`load_mesh`](@ref) to correct them before computing
-view factors.
+Arrows pointing away indicate a winding error — use `reverse_normals=true`
+in [`load_mesh`](@ref) to flip all normals before computing view factors.
