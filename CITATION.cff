@@ -1,0 +1,93 @@
+cff-version: 1.2.0
+title: "RadiativeViewFactor.jl"
+message: >-
+  If you use this software in your research, please cite it using
+  the metadata from this file.
+type: software
+authors:
+  - family-names: Coxe
+    given-names: Alexander
+    email: rot4te@gmail.com
+    orcid: "0000-0001-6719-897X"
+repository-code: "https://github.com/rot4te/RadiativeViewFactor.jl"
+url: "https://rot4te.github.io/RadiativeViewFactor.jl"
+abstract: >-
+  A Julia package for computing radiative view factors between arbitrary
+  surfaces or curves. Meshes may be structured or unstructured and use
+  first- or second-order elements (triangles, quadrilaterals, and lines,
+  mixable within one mesh); any format readable by Gmsh is supported
+  (including .msh, STL, STEP, Nastran, and MED), along with XML VTK
+  unstructured grids (.vtu) via an optional ReadVTK.jl extension. Supports
+  Gauss-Legendre quadrature, Monte Carlo integration with stratified
+  sampling, and the Sauter-Schwab Duffy transformation for near-singular
+  element pairs. Provides CPU multi-threading and GPU backends (NVIDIA CUDA
+  and Apple Metal) via KernelAbstractions.jl, with BVH-accelerated obstruction
+  detection on all backends.
+keywords:
+  - julia
+  - radiation
+  - view factor
+  - configuration factor
+  - finite element
+  - unstructured mesh
+  - Gmsh
+  - VTK
+  - monte carlo
+  - GPU
+  - heat transfer
+license: MIT
+version: "0.5.0"
+date-released: "2025-06-08"
+references:
+  - type: book
+    title: "Thermal Radiation Heat Transfer"
+    edition: "7th"
+    authors:
+      - family-names: Howell
+        given-names: John R.
+      - family-names: Mengüç
+        given-names: M. Pinar
+      - family-names: Siegel
+        given-names: Robert
+    year: 2020
+    publisher:
+      name: CRC Press
+  - type: book
+    title: "Boundary Element Methods"
+    authors:
+      - family-names: Sauter
+        given-names: Stefan A.
+      - family-names: Schwab
+        given-names: Christoph
+    year: 2011
+    publisher:
+      name: Springer
+    doi: "10.1007/978-3-540-68093-2"
+  - type: article
+    title: >-
+      Quadrature over a pyramid or cube of integrands with a singularity
+      at a vertex
+    authors:
+      - family-names: Duffy
+        given-names: M. G.
+    year: 1982
+    journal: "SIAM Journal on Numerical Analysis"
+    volume: 19
+    issue: 6
+    start: 1260
+    end: 1262
+    doi: "10.1137/0719090"
+  - type: article
+    title: "Fast, minimum storage ray/triangle intersection"
+    authors:
+      - family-names: Möller
+        given-names: Tomas
+      - family-names: Trumbore
+        given-names: Ben
+    year: 1997
+    journal: "Journal of Graphics Tools"
+    volume: 2
+    issue: 1
+    start: 21
+    end: 28
+    doi: "10.1080/10867651.1997.10487468"

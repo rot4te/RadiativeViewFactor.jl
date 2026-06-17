@@ -22,7 +22,7 @@ include("Assembly.jl")      # imports Results; defines register_gpu_hook!
 include("GPUAssembly.jl")   # imports Results + Assembly.register_gpu_hook!;
                              # calls register_gpu_hook!(compute_view_factors_gpu)
 
-using .MeshIO:    load_mesh, MeshData
+using .MeshIO:    load_mesh, load_vtu, MeshData
 using .MeshIO:    SurfaceElement
 using .Geometry:  quad8_physical_point, quad8_normal_and_area_element,
                   line3_physical_point, line3_normal_and_length_element
@@ -31,6 +31,7 @@ using .Results:   ViewFactorResult, aggregate_by_group,
 using .Assembly:  compute_view_factors
 
 export load_mesh,
+       load_vtu,
        compute_view_factors,
        aggregate_by_group,
        check_reciprocity,

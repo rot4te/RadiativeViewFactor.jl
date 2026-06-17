@@ -4,6 +4,7 @@
 
 ```@docs
 RadiativeViewFactor.load_mesh
+RadiativeViewFactor.load_vtu
 RadiativeViewFactor.MeshData
 RadiativeViewFactor.SurfaceElement
 ```

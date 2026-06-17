@@ -11,16 +11,24 @@ import Gmsh: gmsh
 # ---------------------------------------------------------------------------
 # Supported element types
 # ---------------------------------------------------------------------------
+# Both 1st-order (linear) and 2nd-order (quadratic) elements are supported.
+#
 # Dimension 1 (curves, planar 2D view factors per unit depth):
+#   Type  1 — Line2  (2-node 1st-order line)
 #   Type  8 — Line3  (3-node 2nd-order line)
 # Dimension 2 (surfaces, 3D view factors):
+#   Type  2 — Tri3   (3-node 1st-order triangle)
+#   Type  3 — Quad4  (4-node 1st-order quadrilateral)
 #   Type  9 — Tri6   (6-node 2nd-order triangle)
-#   Type 16 — Quad8  (8-node serendipity quadrilateral)   ← preferred
+#   Type 16 — Quad8  (8-node serendipity quadrilateral)   ← preferred 2nd order
 #   Type 10 — Quad9  (9-node Lagrange quad) → centre node dropped → Quad8
 
 const ELEM_INFO = Dict{Int, NamedTuple}(
+     1 => (n_nodes=2, n_corners=2, family=:line2),
      8 => (n_nodes=3, n_corners=2, family=:line3),
+     2 => (n_nodes=3, n_corners=3, family=:tri3),
      9 => (n_nodes=6, n_corners=3, family=:tri),
+     3 => (n_nodes=4, n_corners=4, family=:quad4),
     16 => (n_nodes=8, n_corners=4, family=:quad),
     10 => (n_nodes=9, n_corners=4, family=:quad),
 )
@@ -58,13 +66,30 @@ end; export MeshData
 """
     load_mesh(filename; surface_dim=2, verbose=true) -> MeshData
 
-Load a Gmsh `.msh` file and extract all 2nd-order elements belonging to
+Load a mesh and extract all supported 1st- or 2nd-order elements belonging to
 named physical groups.
+
+Any file format that the Gmsh API can open is supported — the format is
+inferred from the extension. This includes Gmsh `.msh` (all versions), and via
+Gmsh's importers `.stl`, `.step`/`.stp`, `.bdf`/`.nas` (Nastran), `.med`,
+`.vtk` (legacy ASCII unstructured grids), and others.
+
+Supported element families (any mix in one mesh):
+- Surfaces (`surface_dim=2`): Tri3, Quad4 (1st order); Tri6, Quad8/Quad9 (2nd order).
+- Curves   (`surface_dim=1`): Line2 (1st order); Line3 (2nd order).
 
 `surface_dim=2` (default) — surface mesh, 3D view factors.
 `surface_dim=1`            — planar curve mesh, 2D view factors per unit depth.
-                             Physical Curve groups are expected; elements must be
-                             Line3 (Gmsh type 8, requires `Mesh.ElementOrder = 2`).
+
+Named physical groups are used to partition the radiating surfaces. Formats
+that cannot carry physical groups (e.g. STL) have no named groups; in that case
+a single synthetic group named `"default"` covering every entity of
+`surface_dim` is created so the rest of the pipeline behaves uniformly.
+
+XML VTK files (`.vtu` and XML-form `.vtk`) are detected automatically and read
+through ReadVTK.jl (a weak dependency — `using ReadVTK` must be in scope).
+Legacy ASCII/binary `.vtk` files are not handled by ReadVTK and fall through to
+the Gmsh importer. See [`load_vtu`](@ref) for VTK-specific options.
 """
 function load_mesh(filename::AbstractString;
                    surface_dim    ::Int  = 2,
@@ -72,12 +97,20 @@ function load_mesh(filename::AbstractString;
                    verbose        ::Bool = true)::MeshData
     isfile(filename) || error("Mesh file not found: $filename")
     surface_dim ∈ (1, 2) || error("surface_dim must be 1 or 2, got $surface_dim")
+    # XML VTK (.vtu / XML .vtk) is read via the ReadVTK extension; everything
+    # else goes through Gmsh (which also reads legacy .vtk partially).
+    if _is_xml_vtk(filename)
+        return load_vtu(filename; surface_dim, reverse_normals, verbose)
+    end
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 0)
     gmsh.open(filename)
     try
         coords, tag2idx = _read_nodes()
         group_tags      = _read_physical_groups(surface_dim)
+        if isempty(group_tags)
+            group_tags = _synthesize_default_group(surface_dim, verbose)
+        end
         surface_elems, group_elems =
             _read_surface_elements(surface_dim, group_tags, tag2idx, verbose)
         if surface_dim == 1
@@ -90,15 +123,17 @@ function load_mesh(filename::AbstractString;
         group_tri_soup  = _build_group_obs_soups(coords, surface_elems,
                                                   group_elems, surface_dim)
         if verbose
-            counts = Dict{Symbol,Int}(:quad=>0, :tri=>0, :line3=>0)
+            counts = Dict{Symbol,Int}(:quad=>0, :quad4=>0, :tri=>0, :tri3=>0,
+                                      :line3=>0, :line2=>0)
             for e in surface_elems; counts[e.family] += 1; end
             if surface_dim == 2
                 println("Loaded $(length(surface_elems)) surface elements ",
-                        "(quad: $(counts[:quad]), tri: $(counts[:tri])) ",
+                        "(quad8: $(counts[:quad]), quad4: $(counts[:quad4]), ",
+                        "tri6: $(counts[:tri]), tri3: $(counts[:tri3])) ",
                         "in $(length(group_tags)) physical group(s).")
             else
                 println("Loaded $(length(surface_elems)) curve elements ",
-                        "(line3: $(counts[:line3])) ",
+                        "(line3: $(counts[:line3]), line2: $(counts[:line2])) ",
                         "in $(length(group_tags)) physical group(s).")
             end
         end
@@ -108,6 +143,67 @@ function load_mesh(filename::AbstractString;
         gmsh.finalize()
     end
 end; export load_mesh
+
+# ---------------------------------------------------------------------------
+# XML VTK (.vtu) support via the ReadVTK extension
+# ---------------------------------------------------------------------------
+
+"""
+    _is_xml_vtk(filename) -> Bool
+
+Detect XML-form VTK files (`.vtu` and `.vtk` written in XML form) by sniffing
+the header. Legacy VTK files begin with `# vtk DataFile Version` and return
+`false` (they are routed to Gmsh instead).
+"""
+function _is_xml_vtk(filename::AbstractString)::Bool
+    ext = lowercase(splitext(filename)[2])
+    ext in (".vtu", ".pvtu", ".vts", ".vtr", ".vti", ".vtp") && return true
+    ext == ".vtk" || return false
+    # Ambiguous .vtk: peek at the first non-whitespace bytes.
+    head = open(filename, "r") do io
+        String(read(io, min(512, filesize(filename))))
+    end
+    return occursin(r"<\?xml|<VTKFile", head)
+end
+
+# Hook implemented by RadiativeViewFactorReadVTKExt (weak dep on ReadVTK).
+# Defined here with no methods so the extension can add one and so `load_mesh`
+# can detect whether ReadVTK is loaded.
+function _load_vtu_impl end
+
+"""
+    load_vtu(filename; surface_dim=2, reverse_normals=false, verbose=true,
+             group_field=nothing) -> MeshData
+
+Load an XML VTK unstructured grid (`.vtu`) through ReadVTK.jl. Requires
+`using ReadVTK` to be in scope (ReadVTK is a weak dependency).
+
+VTK has no native concept of physical groups. If `group_field` names a
+per-cell integer data array it is used to partition elements into groups;
+otherwise (or if the named array is absent) a single `"default"` group is
+created. Common region arrays (`CellEntityIds`, `gmsh:physical`, `RegionId`,
+`MaterialIds`) are tried automatically when `group_field === nothing`.
+
+Cell types are mapped to element families as:
+Line(3)→line2, QuadraticEdge(21)→line3, Triangle(5)→tri3,
+QuadraticTriangle(22)→tri6, Quad(9)→quad4, QuadraticQuad(23)→quad8.
+"""
+function load_vtu(filename::AbstractString;
+                  surface_dim    ::Int  = 2,
+                  reverse_normals::Bool = false,
+                  verbose        ::Bool = true,
+                  group_field           = nothing)::MeshData
+    if isempty(methods(_load_vtu_impl))
+        error("""
+        Reading XML VTK files (.vtu) requires ReadVTK.jl.
+        Add it and bring it into scope:
+            import Pkg; Pkg.add("ReadVTK")
+            using ReadVTK
+        Then call load_mesh / load_vtu again.
+        """)
+    end
+    return _load_vtu_impl(filename, surface_dim, reverse_normals, verbose, group_field)
+end; export load_vtu
 
 function _read_nodes()
     node_tags, coords_flat, _ = gmsh.model.mesh.getNodes()
@@ -121,10 +217,30 @@ function _read_physical_groups(dim::Int)::Dict{Int,String}
     groups = Dict{Int,String}()
     for (d, tag) in gmsh.model.getPhysicalGroups()
         d == dim || continue
-        groups[Int(tag)] = gmsh.model.getPhysicalName(d, tag)
+        name = gmsh.model.getPhysicalName(d, tag)
+        # Unnamed physical groups return ""; fall back to a tag-based label.
+        groups[Int(tag)] = isempty(name) ? "group_$(Int(tag))" : name
     end
-    isempty(groups) && @warn "No physical groups of dimension $dim found in mesh."
     return groups
+end
+
+"""
+    _synthesize_default_group(dim, verbose) -> Dict{Int,String}
+
+For formats that carry no physical groups (e.g. STL), create a single physical
+group of dimension `dim` containing every entity of that dimension, so the rest
+of the loader can treat the whole mesh as one radiating group named "default".
+Must be called while the Gmsh session is open.
+"""
+function _synthesize_default_group(dim::Int, verbose::Bool)::Dict{Int,String}
+    ent_tags = Int[Int(tag) for (d, tag) in gmsh.model.getEntities(dim)]
+    isempty(ent_tags) &&
+        error("No entities of dimension $dim found in mesh; nothing to load.")
+    ptag = Int(gmsh.model.addPhysicalGroup(dim, ent_tags))
+    gmsh.model.setPhysicalName(dim, ptag, "default")
+    verbose && @info "No physical groups of dimension $dim found; " *
+                     "created a synthetic \"default\" group over all $(length(ent_tags)) entities."
+    return Dict{Int,String}(ptag => "default")
 end
 
 function _read_surface_elements(dim, group_tags, tag2idx, verbose)
@@ -145,18 +261,12 @@ function _read_surface_elements(dim, group_tags, tag2idx, verbose)
                 n_elems   = length(etags)
                 ntags_mat = reshape(ntags, n_nodes, n_elems)
                 type_counts[itype] = get(type_counts, itype, 0) + n_elems
+                # Quad9 (type 10) carries a 9th centre node we drop → treat as Quad8.
+                n_keep = info.family === :quad && n_nodes == 9 ? 8 : n_nodes
                 for k in 1:n_elems
-                    raw = ntags_mat[:, k]
-                    if info.family === :quad
-                        node_idx = [tag2idx[Int(raw[a])] for a in 1:8]
-                        push!(surface_elems, SurfaceElement(node_idx, gtag, :quad))
-                    elseif info.family === :tri
-                        node_idx = [tag2idx[Int(raw[a])] for a in 1:6]
-                        push!(surface_elems, SurfaceElement(node_idx, gtag, :tri))
-                    else  # :line3
-                        node_idx = [tag2idx[Int(raw[a])] for a in 1:3]
-                        push!(surface_elems, SurfaceElement(node_idx, gtag, :line3))
-                    end
+                    raw      = ntags_mat[:, k]
+                    node_idx = [tag2idx[Int(raw[a])] for a in 1:n_keep]
+                    push!(surface_elems, SurfaceElement(node_idx, gtag, info.family))
                     push!(group_elems[gtag], length(surface_elems))
                 end
             end
@@ -169,20 +279,21 @@ function _read_surface_elements(dim, group_tags, tag2idx, verbose)
             etypes, _, _ = gmsh.model.mesh.getElements(d, ent)
             union!(all_types, Int.(etypes))
         end
-        supported = dim == 1 ? "Line3 (8)" : "Tri6 (9), Quad8 (16), Quad9 (10)"
+        supported = dim == 1 ? "Line2 (1), Line3 (8)" :
+                               "Tri3 (2), Quad4 (3), Tri6 (9), Quad8 (16), Quad9 (10)"
         error("""
-No supported 2nd-order elements found in physical groups (dimension $dim).
-Supported types: $supported
+No supported elements found in physical groups (dimension $dim).
+Supported types (1st or 2nd order): $supported
 Element types present at dimension $dim: $(sort(collect(all_types)))
 Common causes:
-  • Mesh is 1st order — re-run with `Mesh.ElementOrder = 2` or `-order 2`
   • Physical groups defined on wrong dimension (expected $dim)
   • Entities not included in a Physical Group
 """)
     end
 
     if verbose
-        type_names = Dict(8=>"Line3", 9=>"Tri6", 16=>"Quad8", 10=>"Quad9")
+        type_names = Dict(1=>"Line2", 8=>"Line3", 2=>"Tri3", 9=>"Tri6",
+                          3=>"Quad4", 16=>"Quad8", 10=>"Quad9")
         for (t, n) in sort(collect(type_counts))
             t == 10 && @info "Quad9 (type 10) found — centre node dropped, treated as Quad8."
             println("  Element type $(get(type_names,t,string(t))): $n elements")
@@ -333,10 +444,15 @@ function _build_curve_to_surface_centroid(
     return result
 end
 
+# True for curve element families (Line2, Line3).
+@inline _is_line(family::Symbol) = family === :line3 || family === :line2
+# True for quadrilateral element families (Quad4, Quad8).
+@inline _is_quad(family::Symbol) = family === :quad || family === :quad4
+
 """
     _orient_line3_normals!(surface_elems, group_elems, coords, verbose)
 
-For each Line3 element, determine the correct normal direction element-wise:
+For each Line2/Line3 element, determine the correct normal direction element-wise:
 
 1. Find the curve entity that the element belongs to via Gmsh adjacency queries.
 2. Compute the centroid of the adjacent transfinite surface — the interior that
@@ -360,7 +476,7 @@ function _orient_line3_normals!(surface_elems::Vector{SurfaceElement},
     all_curve_entities = Set{Int}()
     for (gtag, idxs) in group_elems
         isempty(idxs) && continue
-        surface_elems[idxs[1]].family === :line3 || continue
+        _is_line(surface_elems[idxs[1]].family) || continue
         for ent_raw in gmsh.model.getEntitiesForPhysicalGroup(1, gtag)
             push!(all_curve_entities, Int(ent_raw))
         end
@@ -413,11 +529,11 @@ function _orient_line3_normals!(surface_elems::Vector{SurfaceElement},
     n_flipped = 0
     for (gtag, idxs) in group_elems
         isempty(idxs) && continue
-        surface_elems[idxs[1]].family === :line3 || continue
+        _is_line(surface_elems[idxs[1]].family) || continue
 
         for idx in idxs
             el = surface_elems[idx]
-            el.family === :line3 || continue
+            _is_line(el.family) || continue
 
             # Find curve entity for this element via its first node
             curve_ent = get(pos_to_curve, el.nodes[1], 0)
@@ -437,13 +553,22 @@ function _orient_line3_normals!(surface_elems::Vector{SurfaceElement},
                 continue
             end
 
-            # Evaluate element midpoint in physical space
-            # At ξ=0: N = (0, 0, 1) so midpoint = coords of node 3 (the midpoint node)
-            el_mid = SVector{3,Float64}(
-                coords[1, el.nodes[3]],
-                coords[2, el.nodes[3]],
-                coords[3, el.nodes[3]],
-            )
+            # Evaluate element midpoint in physical space.
+            # Line3: at ξ=0, N=(0,0,1) → midpoint is node 3 (the midpoint node).
+            # Line2: no midpoint node → average the two endpoints.
+            el_mid = if el.family === :line3
+                SVector{3,Float64}(
+                    coords[1, el.nodes[3]],
+                    coords[2, el.nodes[3]],
+                    coords[3, el.nodes[3]],
+                )
+            else  # :line2
+                SVector{3,Float64}(
+                    0.5*(coords[1, el.nodes[1]] + coords[1, el.nodes[2]]),
+                    0.5*(coords[2, el.nodes[1]] + coords[2, el.nodes[2]]),
+                    0.5*(coords[3, el.nodes[1]] + coords[3, el.nodes[2]]),
+                )
+            end
 
             # Evaluate actual normal at ξ=0:
             # dN/dξ at ξ=0: dN₁=-0.5, dN₂=0.5, dN₃=0
@@ -478,22 +603,29 @@ end
     _reverse_all_normals!(surface_elems, surface_dim)
 
 Reverse the normal of every element by swapping the node ordering:
+  - Line2  (:line2) : swap nodes 1 ↔ 2 (endpoints)
   - Line3  (:line3) : swap nodes 1 ↔ 2 (endpoints); node 3 (midpoint) unchanged
+  - Quad4  (:quad4) : swap nodes 1 ↔ 3 (reverses winding)
   - Quad8  (:quad)  : swap nodes 1 ↔ 3 and 5 ↔ 7 (reverses winding)
+  - Tri3   (:tri3)  : swap nodes 1 ↔ 3 (reverses winding)
   - Tri6   (:tri)   : swap nodes 1 ↔ 3 and 4 ↔ 6 (reverses winding)
 """
 function _reverse_all_normals!(surface_elems::Vector{SurfaceElement},
                                 surface_dim  ::Int)
     for (i, el) in enumerate(surface_elems)
         nodes = copy(el.nodes)
-        if el.family === :line3
+        if el.family === :line3 || el.family === :line2
             nodes[1], nodes[2] = nodes[2], nodes[1]
         elseif el.family === :quad
             nodes[1], nodes[3] = nodes[3], nodes[1]
             nodes[5], nodes[7] = nodes[7], nodes[5]
+        elseif el.family === :quad4
+            nodes[1], nodes[3] = nodes[3], nodes[1]
         elseif el.family === :tri
             nodes[1], nodes[3] = nodes[3], nodes[1]
             nodes[4], nodes[6] = nodes[6], nodes[4]
+        elseif el.family === :tri3
+            nodes[1], nodes[3] = nodes[3], nodes[1]
         end
         surface_elems[i] = SurfaceElement(nodes, el.group, el.family)
     end
@@ -521,7 +653,7 @@ function _build_group_obs_soups(coords     ::Matrix{Float64},
 
     for (gtag, idxs) in group_elems
         if dim == 2
-            n_tris = sum(elems[i].family === :quad ? 2 : 1 for i in idxs)
+            n_tris = sum(_is_quad(elems[i].family) ? 2 : 1 for i in idxs)
             soup   = Array{Float64,3}(undef, 3, 3, n_tris)
             t = 0
             for i in idxs
@@ -531,7 +663,7 @@ function _build_group_obs_soups(coords     ::Matrix{Float64},
                 v3 = @view coords[:, c[3]]
                 t += 1
                 soup[:, 1, t] .= v1; soup[:, 2, t] .= v2; soup[:, 3, t] .= v3
-                if el.family === :quad
+                if _is_quad(el.family)
                     v4 = @view coords[:, c[4]]
                     t += 1
                     soup[:, 1, t] .= v1; soup[:, 2, t] .= v3; soup[:, 3, t] .= v4

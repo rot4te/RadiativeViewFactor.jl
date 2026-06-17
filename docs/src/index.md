@@ -1,13 +1,17 @@
 # RadiativeViewFactor.jl
 
 A Julia package for computing **radiative view factors** between arbitrary surfaces
-or curves discretized on 2nd-order meshes generated with [Gmsh](https://gmsh.info/).
+or curves. Meshes may be **structured or unstructured** and **1st- or 2nd-order**;
+any [Gmsh](https://gmsh.info/)-readable format is supported, plus XML VTK (`.vtu`)
+via an optional ReadVTK.jl extension.
 
 ## Overview
 
 RadiativeViewFactor.jl evaluates the double-surface integral that defines the
-geometric view factor between pairs of finite surfaces, using the mesh generated
-by Gmsh as its geometric description. Three integration strategies are available:
+geometric view factor between pairs of finite surfaces. The geometry is supplied
+as a mesh: the solver works from element node connectivity alone, so structured
+and unstructured meshes are treated identically, and 1st- and 2nd-order elements
+may be mixed freely. Three integration strategies are available:
 
 - **Gauss–Legendre quadrature** — the default; spectral convergence for smooth
   geometries
@@ -37,8 +41,13 @@ Pkg.add("Metal")  # Apple Silicon
 For mesh visualisation:
 
 ```julia
-Pkg.add("GLMakie")   # interactive window
-Pkg.add("CairoMakie") # file output (PNG, SVG, PDF)
+Pkg.add("Plots")   # enables plot_mesh_normals
+```
+
+For loading XML VTK (`.vtu`) meshes:
+
+```julia
+Pkg.add("ReadVTK")
 ```
 
 ## Quick Example

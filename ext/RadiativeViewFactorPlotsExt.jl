@@ -111,12 +111,21 @@ function plot_mesh_normals(mesh::MeshData;
         if el.family === :line3
             _draw_line3!(plt, el, mesh.coords, col, label,
                           normal_scale, show_nodes, show_indices, idx)
+        elseif el.family === :line2
+            _draw_line2!(plt, el, mesh.coords, col, label,
+                          normal_scale, show_nodes, show_indices, idx)
         elseif el.family === :quad
             _draw_quad8_2d!(plt, el, mesh.coords, col, label,
                              normal_scale, show_nodes, show_indices, idx)
+        elseif el.family === :quad4
+            _draw_poly_2d!(plt, el, mesh.coords, col, label,
+                            normal_scale, show_nodes, show_indices, idx, 4)
         elseif el.family === :tri
             _draw_tri6_2d!(plt, el, mesh.coords, col, label,
                             normal_scale, show_nodes, show_indices, idx)
+        elseif el.family === :tri3
+            _draw_poly_2d!(plt, el, mesh.coords, col, label,
+                            normal_scale, show_nodes, show_indices, idx, 3)
         end
 
         push!(legend_added, el.group)
@@ -207,6 +216,51 @@ function _draw_tri6_2d!(plt, el::SurfaceElement, coords, col, label,
     if show_indices
         annotate!(plt, cx, cy, text(string(idx), 7, col, :center))
     end
+end
+
+# Linear curve element (Line2): straight segment between the two endpoints.
+function _draw_line2!(plt, el::SurfaceElement, coords, col, label,
+                       scale, show_nodes, show_indices, idx)
+    x1, y1 = coords[1,el.nodes[1]], coords[2,el.nodes[1]]
+    x2, y2 = coords[1,el.nodes[2]], coords[2,el.nodes[2]]
+    plot!(plt, [x1, x2], [y1, y2]; color=col, linewidth=1.5, label=label)
+
+    # Normal at midpoint: 90° CCW rotation of the unit tangent in xy
+    mx, my = 0.5*(x1+x2), 0.5*(y1+y2)
+    tx, ty = x2-x1, y2-y1
+    tl = hypot(tx, ty)
+    if tl > 0
+        _arrow2d!(plt, mx, my, -ty/tl*scale, tx/tl*scale, col)
+    end
+
+    if show_nodes
+        scatter!(plt, coords[1,el.nodes], coords[2,el.nodes];
+                 color=col, markersize=3, markerstrokewidth=0, label="")
+    end
+    show_indices && annotate!(plt, mx, my, text(string(idx), 7, col, :center))
+end
+
+# Linear surface element (Tri3 / Quad4): straight edges between `nc` corners.
+function _draw_poly_2d!(plt, el::SurfaceElement, coords, col, label,
+                         scale, show_nodes, show_indices, idx, nc::Int)
+    xs = [coords[1, el.nodes[mod1(k, nc)]] for k in 1:nc+1]
+    ys = [coords[2, el.nodes[mod1(k, nc)]] for k in 1:nc+1]
+    plot!(plt, xs, ys; color=col, linewidth=1.0, label=label)
+
+    # Normal from first-corner cross product, projected to xy
+    v1 = coords[:,el.nodes[1]]; v2 = coords[:,el.nodes[2]]; v3 = coords[:,el.nodes[3]]
+    e1 = v2-v1; e2 = v3-v1
+    n  = [e1[2]*e2[3]-e1[3]*e2[2], e1[3]*e2[1]-e1[1]*e2[3], e1[1]*e2[2]-e1[2]*e2[1]]
+    nn = norm(n); n = nn > 0 ? n/nn : n
+    cx = mean(coords[1,el.nodes[k]] for k in 1:nc)
+    cy = mean(coords[2,el.nodes[k]] for k in 1:nc)
+    _arrow2d!(plt, cx, cy, n[1]*scale, n[2]*scale, col)
+
+    if show_nodes
+        scatter!(plt, coords[1,el.nodes], coords[2,el.nodes];
+                 color=col, markersize=3, markerstrokewidth=0, label="")
+    end
+    show_indices && annotate!(plt, cx, cy, text(string(idx), 7, col, :center))
 end
 
 # ---------------------------------------------------------------------------

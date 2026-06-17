@@ -75,6 +75,7 @@ import ..Geometry:    quad8_physical_point, quad8_normal_and_area_element
 import ..BVH:         BVHTree
 import ..RayCast:     is_visible
 import ..MeshIO:      SurfaceElement
+import ..ViewFactorKernel: element_pair_view_factor
 
 export element_pair_view_factor_duffy, singularity_type
 
@@ -440,10 +441,13 @@ Compute the raw double integral ∬K dAⱼ dAᵢ using the appropriate method:
 - COMMON_VERTEX: Sauter–Schwab 8-region Duffy transformation
 - COMMON_EDGE:   Sauter–Schwab 5-region Duffy transformation
 
-Only supports Quad8 elements. Falls back to standard quadrature for Tri6
-and Line3 elements (Duffy for those families can be added separately).
+The Duffy/Sauter–Schwab singular treatment only applies to Quad8–Quad8
+surface pairs. For every other element family (Quad4, Tri6, Tri3, Line2,
+Line3) and for 2-D curve meshes, this falls back to the standard tensor-
+product quadrature in `element_pair_view_factor`, which handles all families
+and both dimensions correctly.
 
-Also returns Aᵢ (area of elem_i) computed via standard quadrature.
+Also returns Aᵢ (the measure — area or arc length — of elem_i).
 """
 function element_pair_view_factor_duffy(coords  ::Matrix{Float64},
                                          elem_i  ::SurfaceElement,
@@ -451,25 +455,22 @@ function element_pair_view_factor_duffy(coords  ::Matrix{Float64},
                                          nquad   ::Int,
                                          bvh     ::Union{BVHTree,Nothing},
                                          mesh_dim::Int = 2)::Tuple{Float64,Float64}
-    # Compute area of elem_i via standard quadrature (always needed)
+    # Only Quad8–Quad8 surface pairs use the Duffy transformation; everything
+    # else (linear elements, triangles, curves) falls back to the standard
+    # quadrature path, which returns (raw integral, measure of elem_i).
+    if elem_i.family !== :quad || elem_j.family !== :quad || mesh_dim == 1
+        return element_pair_view_factor(coords, elem_i, elem_j, nquad, bvh, mesh_dim)
+    end
+
+    # Area of elem_i (Quad8) via standard quadrature
     rule  = gauss_legendre_2d(nquad)
     wts   = rule.weights
     pts   = rule.points
     Ai    = 0.0
     for p in eachindex(wts)
         ξ, η = pts[1,p], pts[2,p]
-        if elem_i.family === :quad
-            _, dA = quad8_normal_and_area_element(coords, elem_i.nodes, ξ, η)
-            Ai += wts[p] * dA
-        end
-    end
-
-    # Only Duffy for quad-quad pairs; fall back for other families
-    if elem_i.family !== :quad || elem_j.family !== :quad || mesh_dim == 1
-        # Use standard quadrature via the ViewFactorKernel path
-        # (import avoided to prevent circular dependency; inline standard integral)
-        raw = _standard_integral(coords, elem_i, elem_j, nquad, bvh)
-        return raw, Ai
+        _, dA = quad8_normal_and_area_element(coords, elem_i.nodes, ξ, η)
+        Ai += wts[p] * dA
     end
 
     stype, ci, cj = singularity_type(elem_i, elem_j)
