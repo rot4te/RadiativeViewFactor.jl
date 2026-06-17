@@ -25,7 +25,7 @@
 # coords       : Float64/Float32  (3, N_nodes)
 # nodes_quad   : Int32            (8, N_quad_elems)   — Quad8 node indices
 # nodes_tri    : Int32            (6, N_tri_elems)    — Tri6  node indices
-# elem_family  : Int8             (N_elems,)          — 0=quad, 1=tri
+# elem_family  : Int8             (N_elems,)          — 0=quad8, 1=tri6, 2=quad4, 3=tri3
 # elem_node_idx: Int32            (N_elems,)          — index into nodes_quad or nodes_tri
 # quad_pts     : T               (2, NQ)             — reference quadrature points
 # quad_wts     : T               (NQ,)               — quadrature weights
@@ -127,80 +127,6 @@ end
     return x, c/dA, dA
 end
 
-@inline function _quad4_shape(ξ::T, η::T) where T
-    N    = SVector{4,T}(T(0.25)*(1-ξ)*(1-η), T(0.25)*(1+ξ)*(1-η),
-                        T(0.25)*(1+ξ)*(1+η), T(0.25)*(1-ξ)*(1+η))
-    dNdξ = SVector{4,T}(-T(0.25)*(1-η),  T(0.25)*(1-η),
-                         T(0.25)*(1+η), -T(0.25)*(1+η))
-    dNdη = SVector{4,T}(-T(0.25)*(1-ξ), -T(0.25)*(1+ξ),
-                         T(0.25)*(1+ξ),  T(0.25)*(1-ξ))
-    return N, dNdξ, dNdη
-end
-
-# Evaluate physical point and (normal, dA) for Quad4.
-@inline function _quad4_point_and_jac(coords, nodes, col::Int, ξ::T, η::T) where T
-    N, dNdξ, dNdη = _quad4_shape(ξ, η)
-    x    = @SVector zeros(T, 3)
-    dxdξ = @SVector zeros(T, 3)
-    dxdη = @SVector zeros(T, 3)
-    for a in 1:4
-        na = nodes[a, col]
-        xa = SVector{3,T}(coords[1,na], coords[2,na], coords[3,na])
-        x    = x    +  N[a]*xa
-        dxdξ = dxdξ + dNdξ[a]*xa
-        dxdη = dxdη + dNdη[a]*xa
-    end
-    c  = cross(dxdξ, dxdη)
-    dA = sqrt(dot(c,c))
-    return x, c/dA, dA
-end
-
-# Evaluate physical point and (normal, dA) for Tri3 (linear triangle).
-@inline function _tri3_point_and_jac(coords, nodes, col::Int, ξ::T, η::T) where T
-    N    = SVector{3,T}(1-ξ-η, ξ, η)
-    dNdξ = SVector{3,T}(-one(T), one(T), zero(T))
-    dNdη = SVector{3,T}(-one(T), zero(T), one(T))
-    x    = @SVector zeros(T, 3)
-    dxdξ = @SVector zeros(T, 3)
-    dxdη = @SVector zeros(T, 3)
-    for a in 1:3
-        na = nodes[a, col]
-        xa = SVector{3,T}(coords[1,na], coords[2,na], coords[3,na])
-        x    = x    +  N[a]*xa
-        dxdξ = dxdξ + dNdξ[a]*xa
-        dxdη = dxdη + dNdη[a]*xa
-    end
-    c  = cross(dxdξ, dxdη)
-    dA = sqrt(dot(c,c))
-    return x, c/dA, dA
-end
-
-# Family codes: 0=Quad8, 1=Tri6, 2=Quad4, 3=Tri3.
-# Quad families share the tensor-product GL rule; tri families share the
-# Dunavant rule — so the quadrature loop bound depends only on quad-vs-tri.
-@inline _is_quad_fam(f) = (f == zero(f)) | (f == oftype(f, 2))
-
-# Single sampler: given a family code and quadrature index, return the
-# physical point, normal, area element, and weight, dispatching to the
-# correct shape evaluator and reference rule. Inlines to branch-free-per-thread
-# code once `f` is known.
-@inline function _sample(f, p, coords, nq8, nq4, nt6, nt3, col,
-                         quad_pts, quad_wts, tri_pts, tri_wts)
-    if _is_quad_fam(f)
-        ξ = quad_pts[1,p]; η = quad_pts[2,p]; w = quad_wts[p]
-        x, n, dA = f == zero(f) ?
-            _quad8_point_and_jac(coords, nq8, col, ξ, η) :
-            _quad4_point_and_jac(coords, nq4, col, ξ, η)
-        return x, n, dA, w
-    else
-        ξ = tri_pts[1,p]; η = tri_pts[2,p]; w = tri_wts[p]
-        x, n, dA = f == oftype(f, 1) ?
-            _tri6_point_and_jac(coords, nt6, col, ξ, η) :
-            _tri3_point_and_jac(coords, nt3, col, ξ, η)
-        return x, n, dA, w
-    end
-end
-
 @inline function _vf_kernel(xi::SVector{3,T}, ni::SVector{3,T},
                               xj::SVector{3,T}, nj::SVector{3,T}) where T
     r_vec = xj - xi
@@ -223,10 +149,43 @@ end
 # When use_bvh=true the five bvh_* arrays are used for shadow-ray testing.
 # When use_bvh=false those arrays are ignored (pass zero-size dummies).
 
+# ---------------------------------------------------------------------------
+# Inline linear element geometry for GPU kernels
+# ---------------------------------------------------------------------------
+
+@inline function _quad4_point_and_jac(coords, nodes_quad, ni_idx::Int, ξ::T, η::T) where T
+    N    = SVector{4,T}(T(0.25)*(1-ξ)*(1-η), T(0.25)*(1+ξ)*(1-η),
+                         T(0.25)*(1+ξ)*(1+η), T(0.25)*(1-ξ)*(1+η))
+    dNdξ = SVector{4,T}(T(-0.25)*(1-η), T(0.25)*(1-η), T(0.25)*(1+η), T(-0.25)*(1+η))
+    dNdη = SVector{4,T}(T(-0.25)*(1-ξ), T(-0.25)*(1+ξ), T(0.25)*(1+ξ), T(0.25)*(1-ξ))
+    x=@SVector zeros(T,3); dxdξ=@SVector zeros(T,3); dxdη=@SVector zeros(T,3)
+    for a in 1:4
+        na=nodes_quad[a, ni_idx]
+        xa=SVector{3,T}(coords[1,na], coords[2,na], coords[3,na])
+        x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
+    end
+    c=cross(dxdξ,dxdη); dA=sqrt(dot(c,c))
+    return x, c/dA, dA
+end
+
+@inline function _tri3_point_and_jac(coords, nodes_tri, ni_idx::Int, ξ::T, η::T) where T
+    N = SVector{3,T}(1-ξ-η, ξ, η)
+    x=@SVector zeros(T,3)
+    for a in 1:3
+        na=nodes_tri[a, ni_idx]
+        xa=SVector{3,T}(coords[1,na], coords[2,na], coords[3,na])
+        x=x+N[a]*xa
+    end
+    na1=nodes_tri[1,ni_idx]; na2=nodes_tri[2,ni_idx]; na3=nodes_tri[3,ni_idx]
+    e1=SVector{3,T}(coords[1,na2]-coords[1,na1], coords[2,na2]-coords[2,na1], coords[3,na2]-coords[3,na1])
+    e2=SVector{3,T}(coords[1,na3]-coords[1,na1], coords[2,na3]-coords[2,na1], coords[3,na3]-coords[3,na1])
+    c=cross(e1,e2); dA=sqrt(dot(c,c))
+    return x, c/dA, dA
+end
+
 @kernel function _vf_pair_kernel!(raw_out, area_out,
                                    coords,
                                    nodes_quad, nodes_tri,
-                                   nodes_quad4, nodes_tri3,
                                    elem_family, elem_node_idx,
                                    elem_group,
                                    quad_pts, quad_wts,
@@ -252,37 +211,82 @@ end
 
     fi     = elem_family[i]
     fj     = elem_family[j]
-    ni_idx = Int(elem_node_idx[i])
-    nj_idx = Int(elem_node_idx[j])
-
-    npi = _is_quad_fam(fi) ? nq : nqt
-    npj = _is_quad_fam(fj) ? nq : nqt
+    ni_idx = elem_node_idx[i]
+    nj_idx = elem_node_idx[j]
 
     # ---- compute element areas independently ----
-    for p in 1:npi
-        _, _, dAi, wi = _sample(fi, p, coords, nodes_quad, nodes_quad4,
-                                nodes_tri, nodes_tri3, ni_idx,
-                                quad_pts, quad_wts, tri_pts, tri_wts)
+    for p in 1:((fi == 0 || fi == 2) ? nq : nqt)
+        if fi == 0
+            ξ, η = quad_pts[1,p], quad_pts[2,p];  wi = quad_wts[p]
+            _, _, dAi = _quad8_point_and_jac(coords, nodes_quad, Int(ni_idx), ξ, η)
+        elseif fi == 2
+            ξ, η = quad_pts[1,p], quad_pts[2,p];  wi = quad_wts[p]
+            _, _, dAi = _quad4_point_and_jac(coords, nodes_quad, Int(ni_idx), ξ, η)
+        elseif fi == 1
+            ξ, η = tri_pts[1,p], tri_pts[2,p];  wi = tri_wts[p]
+            _, _, dAi = _tri6_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
+        else  # fi == 3
+            ξ, η = tri_pts[1,p], tri_pts[2,p];  wi = tri_wts[p]
+            _, _, dAi = _tri3_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
+        end
         Ai += wi * dAi
     end
-    for q in 1:npj
-        _, _, dAj, wj = _sample(fj, q, coords, nodes_quad, nodes_quad4,
-                                nodes_tri, nodes_tri3, nj_idx,
-                                quad_pts, quad_wts, tri_pts, tri_wts)
+    for q in 1:((fj == 0 || fj == 2) ? nq : nqt)
+        if fj == 0
+            ξj, ηj = quad_pts[1,q], quad_pts[2,q];  wj = quad_wts[q]
+            _, _, dAj = _quad8_point_and_jac(coords, nodes_quad, Int(nj_idx), ξj, ηj)
+        elseif fj == 2
+            ξj, ηj = quad_pts[1,q], quad_pts[2,q];  wj = quad_wts[q]
+            _, _, dAj = _quad4_point_and_jac(coords, nodes_quad, Int(nj_idx), ξj, ηj)
+        elseif fj == 1
+            ξj, ηj = tri_pts[1,q], tri_pts[2,q];  wj = tri_wts[q]
+            _, _, dAj = _tri6_point_and_jac(coords, nodes_tri, Int(nj_idx), ξj, ηj)
+        else  # fj == 3
+            ξj, ηj = tri_pts[1,q], tri_pts[2,q];  wj = tri_wts[q]
+            _, _, dAj = _tri3_point_and_jac(coords, nodes_tri, Int(nj_idx), ξj, ηj)
+        end
         Aj += wj * dAj
     end
 
     # ---- double quadrature loop for view factor integral ----
-    for p in 1:npi
-        xi, nni, dAi, wi = _sample(fi, p, coords, nodes_quad, nodes_quad4,
-                                   nodes_tri, nodes_tri3, ni_idx,
-                                   quad_pts, quad_wts, tri_pts, tri_wts)
+    for p in 1:(fi == 0 ? nq : nqt)
+        if fi == 0
+            ξ, η   = quad_pts[1,p], quad_pts[2,p]
+            wi     = quad_wts[p]
+            xi, nni, dAi = _quad8_point_and_jac(coords, nodes_quad, Int(ni_idx), ξ, η)
+        elseif fi == 2
+            ξ, η   = quad_pts[1,p], quad_pts[2,p]
+            wi     = quad_wts[p]
+            xi, nni, dAi = _quad4_point_and_jac(coords, nodes_quad, Int(ni_idx), ξ, η)
+        elseif fi == 1
+            ξ, η   = tri_pts[1,p], tri_pts[2,p]
+            wi     = tri_wts[p]
+            xi, nni, dAi = _tri6_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
+        else  # fi == 3
+            ξ, η   = tri_pts[1,p], tri_pts[2,p]
+            wi     = tri_wts[p]
+            xi, nni, dAi = _tri3_point_and_jac(coords, nodes_tri, Int(ni_idx), ξ, η)
+        end
 
         inner = zero(T)
-        for q in 1:npj
-            xj, nnj, dAj, wj = _sample(fj, q, coords, nodes_quad, nodes_quad4,
-                                       nodes_tri, nodes_tri3, nj_idx,
-                                       quad_pts, quad_wts, tri_pts, tri_wts)
+        for q in 1:(fj == 0 ? nq : nqt)
+            if fj == 0
+                ξj, ηj = quad_pts[1,q], quad_pts[2,q]
+                wj     = quad_wts[q]
+                xj, nnj, dAj = _quad8_point_and_jac(coords, nodes_quad, Int(nj_idx), ξj, ηj)
+            elseif fj == 2
+                ξj, ηj = quad_pts[1,q], quad_pts[2,q]
+                wj     = quad_wts[q]
+                xj, nnj, dAj = _quad4_point_and_jac(coords, nodes_quad, Int(nj_idx), ξj, ηj)
+            elseif fj == 1
+                ξj, ηj = tri_pts[1,q], tri_pts[2,q]
+                wj     = tri_wts[q]
+                xj, nnj, dAj = _tri6_point_and_jac(coords, nodes_tri, Int(nj_idx), ξj, ηj)
+            else  # fj == 3
+                ξj, ηj = tri_pts[1,q], tri_pts[2,q]
+                wj     = tri_wts[q]
+                xj, nnj, dAj = _tri3_point_and_jac(coords, nodes_tri, Int(nj_idx), ξj, ηj)
+            end
 
             K = _vf_kernel(xi, nni, xj, nnj)
 
@@ -340,12 +344,9 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
     coords_cpu = FloatT.(mesh.coords)
     N          = length(elems)
 
-    # Separate elements by family, record per-element family, local index, and group.
-    # Family codes: 0=Quad8, 1=Tri6, 2=Quad4, 3=Tri3.
-    quad8_node_lists = Vector{Vector{Int32}}()
-    tri6_node_lists  = Vector{Vector{Int32}}()
-    quad4_node_lists = Vector{Vector{Int32}}()
-    tri3_node_lists  = Vector{Vector{Int32}}()
+    # Separate elements by family, record per-element family, local index, and group
+    quad_node_lists = Vector{Vector{Int32}}()
+    tri_node_lists  = Vector{Vector{Int32}}()
     elem_family     = Vector{Int8}(undef, N)
     elem_node_idx   = Vector{Int32}(undef, N)
     elem_group_cpu  = Vector{Int32}(undef, N)
@@ -353,36 +354,31 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
     for (i, el) in enumerate(elems)
         elem_group_cpu[i] = Int32(el.group)
         if el.family === :quad
-            push!(quad8_node_lists, Int32.(el.nodes))
+            push!(quad_node_lists, Int32.(el.nodes))
             elem_family[i]   = Int8(0)
-            elem_node_idx[i] = Int32(length(quad8_node_lists))
+            elem_node_idx[i] = Int32(length(quad_node_lists))
         elseif el.family === :tri
-            push!(tri6_node_lists, Int32.(el.nodes))
+            push!(tri_node_lists, Int32.(el.nodes))
             elem_family[i]   = Int8(1)
-            elem_node_idx[i] = Int32(length(tri6_node_lists))
+            elem_node_idx[i] = Int32(length(tri_node_lists))
         elseif el.family === :quad4
-            push!(quad4_node_lists, Int32.(el.nodes))
+            push!(quad_node_lists, vcat(Int32.(el.nodes), zeros(Int32, 4)))
             elem_family[i]   = Int8(2)
-            elem_node_idx[i] = Int32(length(quad4_node_lists))
-        elseif el.family === :tri3
-            push!(tri3_node_lists, Int32.(el.nodes))
+            elem_node_idx[i] = Int32(length(quad_node_lists))
+        else  # :tri3
+            push!(tri_node_lists, vcat(Int32.(el.nodes), zeros(Int32, 3)))
             elem_family[i]   = Int8(3)
-            elem_node_idx[i] = Int32(length(tri3_node_lists))
-        else
-            error("GPU backend does not support element family $(el.family) " *
-                  "(curve/Line elements are CPU-only).")
+            elem_node_idx[i] = Int32(length(tri_node_lists))
         end
     end
 
-    # Pack node lists into per-family matrices (n_nodes × N_family)
-    nodes_quad_cpu  = !isempty(quad8_node_lists) ?
-        reduce(hcat, quad8_node_lists) : zeros(Int32, 8, 0)
-    nodes_tri_cpu   = !isempty(tri6_node_lists)  ?
-        reduce(hcat, tri6_node_lists)  : zeros(Int32, 6, 0)
-    nodes_quad4_cpu = !isempty(quad4_node_lists) ?
-        reduce(hcat, quad4_node_lists) : zeros(Int32, 4, 0)
-    nodes_tri3_cpu  = !isempty(tri3_node_lists)  ?
-        reduce(hcat, tri3_node_lists)  : zeros(Int32, 3, 0)
+    # Pack node lists into matrices (8 × N_quad) and (6 × N_tri)
+    nq_elems = length(quad_node_lists)
+    nt_elems = length(tri_node_lists)
+    nodes_quad_cpu = nq_elems > 0 ?
+        reduce(hcat, quad_node_lists) : zeros(Int32, 8, 0)
+    nodes_tri_cpu  = nt_elems > 0 ?
+        reduce(hcat, tri_node_lists)  : zeros(Int32, 6, 0)
 
     # Quadrature rules
     gl_rule   = gauss_legendre_2d(nquad)
@@ -397,8 +393,6 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
         coords        = ArrayT(coords_cpu),
         nodes_quad    = ArrayT(nodes_quad_cpu),
         nodes_tri     = ArrayT(nodes_tri_cpu),
-        nodes_quad4   = ArrayT(nodes_quad4_cpu),
-        nodes_tri3    = ArrayT(nodes_tri3_cpu),
         elem_family   = ArrayT(elem_family),
         elem_node_idx = ArrayT(elem_node_idx),
         elem_group    = ArrayT(elem_group_cpu),
@@ -424,17 +418,15 @@ function _dunavant_rule(nquad::Int, ::Type{T}) where T
         pts = T[a1 b1 a1 a2 b2 a2 1/3; a1 a1 b1 a2 a2 b2 1/3]
         w1=T(0.125939180544827/2); w2=T(0.132394440720100/2); w3=T(0.225/2)
         return (points=pts, weights=T[w1,w1,w1,w2,w2,w2,w3])
-    else   # 13-point Dunavant degree 7 (weights for reference area 1/2)
-        cen=T(1/3)
-        a1=T(0.260345966079038); b1=1-2a1
-        a2=T(0.065130102902216); b2=1-2a2
-        a3=T(0.048690315425316); b3=T(0.312865496004875); c3=1-a3-b3
-        # Orbit C: all 6 distinct (ξ,η) permutations of barycentric (a3,b3,c3).
-        pts = T[a1 b1 a1 a2 b2 a2 a3 b3 a3 c3 b3 c3 cen;
-                a1 a1 b1 a2 a2 b2 b3 a3 c3 a3 c3 b3 cen]
-        wc=T(-0.149570044467670/2); wA=T(0.175615257433204/2)
-        wB=T(0.053347235608839/2);  wC=T(0.077113760890257/2)
-        return (points=pts, weights=T[wA,wA,wA,wB,wB,wB,wC,wC,wC,wC,wC,wC,wc])
+    else
+        a1=T(0.0651301029022); b1=1-2a1
+        a2=T(0.3128654960049); b2=1-2a2
+        a3=T(0.0486903154254); b3=T(0.6384441885698); c3=1-a3-b3
+        pts = T[a1 b1 a1 a2 b2 a2 a3 b3 c3 a3 b3 c3 1/3;
+                a1 a1 b1 a2 a2 b2 a3 a3 a3 c3 c3 b3 1/3]
+        w1=T(0.0533472356088/2); w2=T(0.0771137146903/2)
+        w3=T(0.1756152576332/2); w4=T(0.1498275574648/2)
+        return (points=pts, weights=T[w1,w1,w1,w2,w2,w2,w3,w3,w3,w3,w3,w3,w4])
     end
 end
 
@@ -481,10 +473,9 @@ function launch_vf_kernel!(ga, backend;
     end
 
     # Pair kernel: 2-D, one thread per (i,j) with i<j
-    pair_kern! = _vf_pair_kernel!(backend, (groupsize, groupsize))::Any
+    pair_kern! = _vf_pair_kernel!(backend, (groupsize, groupsize))
     pair_kern!(raw_out, area_out, ga.coords,
                ga.nodes_quad, ga.nodes_tri,
-               ga.nodes_quad4, ga.nodes_tri3,
                ga.elem_family, ga.elem_node_idx,
                ga.elem_group,
                ga.quad_pts, ga.quad_wts,
