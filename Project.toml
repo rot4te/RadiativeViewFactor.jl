@@ -1,6 +1,6 @@
 name = "RadiativeViewFactor"
 uuid = "27b7fd98-66cc-11f1-8ce2-791900f7bf38"
-version = "0.5.0"
+version = "0.5.2"
 authors = ["Alex Coxe <rot4te@gmail.com>"]
 
 [deps]
