@@ -249,7 +249,7 @@ end
     end
 
     # ---- double quadrature loop for view factor integral ----
-    for p in 1:(fi == 0 ? nq : nqt)
+    for p in 1:((fi == 0 || fi == 2) ? nq : nqt)
         if fi == 0
             ξ, η   = quad_pts[1,p], quad_pts[2,p]
             wi     = quad_wts[p]
@@ -269,7 +269,7 @@ end
         end
 
         inner = zero(T)
-        for q in 1:(fj == 0 ? nq : nqt)
+        for q in 1:((fj == 0 || fj == 2) ? nq : nqt)
             if fj == 0
                 ξj, ηj = quad_pts[1,q], quad_pts[2,q]
                 wj     = quad_wts[q]
@@ -419,13 +419,13 @@ function _dunavant_rule(nquad::Int, ::Type{T}) where T
         w1=T(0.125939180544827/2); w2=T(0.132394440720100/2); w3=T(0.225/2)
         return (points=pts, weights=T[w1,w1,w1,w2,w2,w2,w3])
     else
-        a1=T(0.0651301029022); b1=1-2a1
-        a2=T(0.3128654960049); b2=1-2a2
-        a3=T(0.0486903154254); b3=T(0.6384441885698); c3=1-a3-b3
+        a1=T(0.0651301029022); b1=1-2a1               # β2  (α2=0.86973979)
+        a2=T(0.2603459660790); b2=1-2a2               # β1  (α1=0.47930807)
+        a3=T(0.0486903154254); b3=T(0.6384441885698); c3=1-a3-b3   # general orbit
         pts = T[a1 b1 a1 a2 b2 a2 a3 b3 c3 a3 b3 c3 1/3;
-                a1 a1 b1 a2 a2 b2 a3 a3 a3 c3 c3 b3 1/3]
-        w1=T(0.0533472356088/2); w2=T(0.0771137146903/2)
-        w3=T(0.1756152576332/2); w4=T(0.1498275574648/2)
+                a1 a1 b1 a2 a2 b2 b3 a3 a3 c3 c3 b3 1/3]
+        w1=T(0.0533472356088/2); w2=T(0.1756152576332/2)
+        w3=T(0.0771137608903/2); w4=T(-0.1495700444677/2)   # centroid weight is negative
         return (points=pts, weights=T[w1,w1,w1,w2,w2,w2,w3,w3,w3,w3,w3,w3,w4])
     end
 end

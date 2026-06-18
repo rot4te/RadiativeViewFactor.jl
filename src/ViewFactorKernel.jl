@@ -54,13 +54,15 @@ function tri_quad_rule(nquad::Int)::TriQuadRule
         w1=0.125939180544827/2; w2=0.132394440720100/2; w3=0.225/2
         return TriQuadRule(pts, [w1,w1,w1, w2,w2,w2, w3])
     else   # 13-point Dunavant degree 7
-        a1=0.0651301029022; b1=1-2a1
-        a2=0.3128654960049; b2=1-2a2
-        a3=0.0486903154254; b3=0.6384441885698; c3=1-a3-b3
+        # Symmetric orbits (α,β,β): the three permutations in (ξ,η)=(L2,L3) are
+        # (β,β),(α,β),(β,α) with α=1-2β.  General orbit (α,β,γ): six perms.
+        a1=0.0651301029022;  b1=1-2a1               # β2  (α2=0.86973979)
+        a2=0.2603459660790;  b2=1-2a2               # β1  (α1=0.47930807)
+        a3=0.0486903154254;  b3=0.6384441885698; c3=1-a3-b3   # general orbit
         pts = [a1  b1  a1  a2  b2  a2  a3  b3  c3  a3  b3  c3  1/3;
                a1  a1  b1  a2  a2  b2  b3  a3  a3  c3  c3  b3  1/3]
-        w1=0.0533472356088/2; w2=0.0771137146903/2
-        w3=0.0764649319397/2; w4=0.1498275574648/2  # corrected: 0.1756152576332/2 was wrong
+        w1=0.0533472356088/2; w2=0.1756152576332/2
+        w3=0.0771137608903/2; w4=-0.1495700444677/2   # centroid weight is negative
         return TriQuadRule(pts, [w1,w1,w1, w2,w2,w2, w3,w3,w3,w3,w3,w3, w4])
     end
 end
