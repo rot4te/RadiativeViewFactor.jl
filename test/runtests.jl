@@ -461,7 +461,7 @@ end
 
     # Without `using ReadVTK`, load_vtu must raise a helpful error (the
     # extension method is not installed in this include-based test context).
-    @test_throws ErrorException load_vtu(f_vtu; verbose=false)
+    @test_throws ErrorException RadiativeViewFactor.MeshIO.load_vtu(f_vtu; verbose=false)
 
     foreach(rm, (f_vtu, f_xvtk, f_legacy, f_msh))
 end

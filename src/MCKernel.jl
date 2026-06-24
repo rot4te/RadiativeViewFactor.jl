@@ -36,6 +36,7 @@ using Random
 
 import ..Geometry:    quad8_physical_point, quad8_normal_and_area_element,
                       quad4_physical_point, quad4_normal_and_area_element,
+                      tri3_physical_point,  tri3_normal_and_area_element,
                       line3_physical_point, line3_normal_and_length_element,
                       line2_physical_point, line2_normal_and_length_element
 import ..BVH:         BVHTree
@@ -133,49 +134,56 @@ function _sample_element(coords::Matrix{Float64},
     ns  = Vector{SVector{3,Float64}}(undef, n)
     dAs = Vector{Float64}(undef, n)
 
-    if elem.family === :quad || elem.family === :quad4
+    if elem.family === :quad
         ref_pts, wt = _stratified_quad_points(n, rng)
-        is8 = elem.family === :quad
         for k in 1:n
             ξ, η    = ref_pts[k]
-            if is8
-                xs[k]   = quad8_physical_point(coords, elem.nodes, ξ, η)
-                nk, dAk = quad8_normal_and_area_element(coords, elem.nodes, ξ, η)
-            else
-                xs[k]   = quad4_physical_point(coords, elem.nodes, ξ, η)
-                nk, dAk = quad4_normal_and_area_element(coords, elem.nodes, ξ, η)
-            end
-            ns[k]   = nk
-            dAs[k]  = dAk
-        end
-        A = wt * sum(dAs)   # MC estimate of element area
-
-    elseif elem.family === :tri || elem.family === :tri3
-        ref_pts, wt = _stratified_tri_points(n, rng)
-        is6 = elem.family === :tri
-        for k in 1:n
-            ξ, η = ref_pts[k]
-            # Inline Tri6/Tri3 evaluation (Geometry tri functions not imported here)
-            xs[k], ns[k], dAs[k] = is6 ?
-                _tri6_point_normal_dA(coords, elem.nodes, ξ, η) :
-                _tri3_point_normal_dA(coords, elem.nodes, ξ, η)
+            xs[k]   = quad8_physical_point(coords, elem.nodes, ξ, η)
+            nk, dAk = quad8_normal_and_area_element(coords, elem.nodes, ξ, η)
+            ns[k]   = nk; dAs[k] = dAk
         end
         A = wt * sum(dAs)
-
-    else  # :line3 / :line2
-        ref_pts, wt = _stratified_line_points(n, rng)
-        is3 = elem.family === :line3
+    elseif elem.family === :quad4
+        ref_pts, wt = _stratified_quad_points(n, rng)
         for k in 1:n
-            ξ      = ref_pts[k]
-            if is3
-                xs[k]  = line3_physical_point(coords, elem.nodes, ξ)
-                nk, dLk = line3_normal_and_length_element(coords, elem.nodes, ξ)
-            else
-                xs[k]  = line2_physical_point(coords, elem.nodes, ξ)
-                nk, dLk = line2_normal_and_length_element(coords, elem.nodes, ξ)
-            end
-            ns[k]  = nk
-            dAs[k] = dLk
+            ξ, η    = ref_pts[k]
+            xs[k]   = quad4_physical_point(coords, elem.nodes, ξ, η)
+            nk, dAk = quad4_normal_and_area_element(coords, elem.nodes, ξ, η)
+            ns[k]   = nk; dAs[k] = dAk
+        end
+        A = wt * sum(dAs)
+    elseif elem.family === :tri
+        ref_pts, wt = _stratified_tri_points(n, rng)
+        for k in 1:n
+            ξ, η = ref_pts[k]
+            xs[k], ns[k], dAs[k] = _tri6_point_normal_dA(coords, elem.nodes, ξ, η)
+        end
+        A = wt * sum(dAs)
+    elseif elem.family === :tri3
+        ref_pts, wt = _stratified_tri_points(n, rng)
+        for k in 1:n
+            ξ, η    = ref_pts[k]
+            xs[k]   = tri3_physical_point(coords, elem.nodes, ξ, η)
+            nk, dAk = tri3_normal_and_area_element(coords, elem.nodes, ξ, η)
+            ns[k]   = nk; dAs[k] = dAk
+        end
+        A = wt * sum(dAs)
+    elseif elem.family === :line3
+        ref_pts, wt = _stratified_line_points(n, rng)
+        for k in 1:n
+            ξ        = ref_pts[k]
+            xs[k]    = line3_physical_point(coords, elem.nodes, ξ)
+            nk, dLk  = line3_normal_and_length_element(coords, elem.nodes, ξ)
+            ns[k]    = nk; dAs[k] = dLk
+        end
+        A = wt * sum(dAs)
+    else  # :line2
+        ref_pts, wt = _stratified_line_points(n, rng)
+        for k in 1:n
+            ξ        = ref_pts[k]
+            xs[k]    = line2_physical_point(coords, elem.nodes, ξ)
+            nk, dLk  = line2_normal_and_length_element(coords, elem.nodes, ξ)
+            ns[k]    = nk; dAs[k] = dLk
         end
         A = wt * sum(dAs)
     end
@@ -191,20 +199,6 @@ end
     dNdη = SVector((4L1-1)*(-1.0), 0.0, 4L3-1, 4*L2*(-1.0), 4L2, 4*(L3*(-1.0)+L1))
     x=@SVector zeros(3); dxdξ=@SVector zeros(3); dxdη=@SVector zeros(3)
     for a in 1:6
-        xa=SVector{3,Float64}(coords[1,nodes[a]],coords[2,nodes[a]],coords[3,nodes[a]])
-        x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
-    end
-    c=cross(dxdξ,dxdη); dA=norm(c)
-    return x, c/dA, dA
-end
-
-# Inline Tri3 point/normal/dA (3-node linear triangle)
-@inline function _tri3_point_normal_dA(coords, nodes, ξ::Float64, η::Float64)
-    N    = SVector(1.0-ξ-η, ξ, η)
-    dNdξ = SVector(-1.0, 1.0, 0.0)
-    dNdη = SVector(-1.0, 0.0, 1.0)
-    x=@SVector zeros(3); dxdξ=@SVector zeros(3); dxdη=@SVector zeros(3)
-    for a in 1:3
         xa=SVector{3,Float64}(coords[1,nodes[a]],coords[2,nodes[a]],coords[3,nodes[a]])
         x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
     end
@@ -278,7 +272,7 @@ end
 @inline _ref_area(el::SurfaceElement) =
     (el.family === :quad || el.family === :quad4) ? 4.0 :   # [-1,1]²
     (el.family === :tri  || el.family === :tri3)  ? 0.5 :   # reference triangle
-                                                    2.0     # [-1,1] (line2/line3)
+                                                    2.0     # [-1,1]
 
 @inline function _kernel_3d(xi, ni, xj, nj)
     r_vec = xj - xi

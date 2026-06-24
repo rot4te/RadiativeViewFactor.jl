@@ -30,7 +30,7 @@ export compute_view_factors,
 Assemble the full view factor matrix at element and physical-group level.
 
 # Arguments
-- `mesh`                : [`MeshData`](@ref) returned by [`load_mesh`](@ref)
+- `mesh`                : `MeshData` returned by `load_mesh`
 - `nquad`               : Gauss points per direction; `nquad²` points per surface
                           element pair, `nquad` per curve element pair.
                           Ignored when `monte_carlo=true`.
@@ -52,7 +52,7 @@ Assemble the full view factor matrix at element and physical-group level.
 - `verbose`             : print progress and row-sum diagnostics
 
 # Returns
-A [`ViewFactorResult`](@ref).
+A `ViewFactorResult`.
 
 # Examples
 ```julia
@@ -159,16 +159,18 @@ function _compute_cpu(mesh              ::MeshData,
     A_elem       = zeros(Float64, N)
 
     if monte_carlo
-        # Each thread needs its own RNG to avoid contention; split from parent rng
-        rngs = [Random.seed!(copy(rng), rand(rng, UInt64)) for _ in 1:Threads.nthreads()]
+        # Pre-generate one independent RNG per row to avoid both thread contention
+        # and the threadid() > nthreads() issue in Julia 1.9+ task-based threading.
+        # Using threadid() as an index is unreliable; per-row RNGs are safe regardless
+        # of how many threads or tasks Julia uses internally.
+        row_rngs = [Random.seed!(copy(rng), rand(rng, UInt64)) for _ in 1:N]
         for i in 1:N
             _, Ai = element_pair_view_factor_mc(coords, elems[i], elems[i],
                                                  n_samples, nothing, mesh_dim,
-                                                 rngs[1])
+                                                 row_rngs[i])
             A_elem[i] = Ai
         end
         Threads.@threads for i in 1:N
-            tid     = Threads.threadid()
             gi      = elems[i].group
             j_start = self_vf ? i : i + 1
             for j in j_start:N
@@ -176,7 +178,7 @@ function _compute_cpu(mesh              ::MeshData,
                 bvh   = get_bvh(gi, gj)
                 integ, _ = element_pair_view_factor_mc(coords, elems[i], elems[j],
                                                         n_samples, bvh, mesh_dim,
-                                                        rngs[tid])
+                                                        row_rngs[i])
                 raw_integral[i, j] = integ
                 raw_integral[j, i] = integ
             end
