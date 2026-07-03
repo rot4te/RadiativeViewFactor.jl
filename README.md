@@ -63,6 +63,11 @@ RadiativeViewFactor.jl/
 │   ├── RadiativeViewFactorMetalExt.jl    # Registers MetalBackend → MtlArray, Float32
 │   ├── RadiativeViewFactorPlotsExt.jl    # plot_mesh_normals (Plots.jl)
 │   └── RadiativeViewFactorReadVTKExt.jl  # XML VTK (.vtu) loading via ReadVTK.jl
+├── benchmarks/
+│   ├── common.jl                # Shared mesh generators and timing helpers
+│   ├── quadrature_bench.jl      # Deterministic assembly benchmark (sweeps N)
+│   ├── montecarlo_bench.jl      # Monte Carlo assembly benchmark (sweeps n_samples)
+│   └── RESULTS.md               # Before/after numbers for the pre-evaluation optimization
 ├── test/
 │   └── runtests.jl
 └── Project.toml
@@ -268,6 +273,19 @@ Physical Curve("obstruction") = {3};
 ```
 
 ## Performance Notes
+
+### Assembly cost and quadrature reuse
+
+Assembly is O(N²) in the element count. Each element's quadrature points and
+geometric quantities (deterministic path) or Monte Carlo samples (MC path) are
+**pre-evaluated once per element** and reused across every pair, rather than
+re-derived inside the pair loop. This keeps per-pair work to the kernel
+evaluation itself and avoids O(N²) shape-function and quadrature-rule
+reconstruction. On an 8-core CPU this is ~2.6–3.1× faster for the deterministic
+path and ~12–15× faster for Monte Carlo, with 60–450× fewer allocations,
+versus re-evaluating per pair — see [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)
+and the reproducible scripts in [`benchmarks/`](benchmarks/). Results are
+numerically identical (the change is evaluation order only).
 
 ### Integration method selection
 

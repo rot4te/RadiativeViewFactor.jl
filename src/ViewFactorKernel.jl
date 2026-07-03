@@ -29,7 +29,7 @@ import ..BVH:         BVHTree
 import ..RayCast:     is_visible
 import ..MeshIO:      SurfaceElement
 
-export element_pair_view_factor
+export element_pair_view_factor, ElementQuad, precompute_quad, element_is_2d
 
 # ---------------------------------------------------------------------------
 # Dunavant quadrature rules for the reference triangle
@@ -152,49 +152,58 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    element_pair_view_factor(coords, elem_i, elem_j, nquad, bvh) -> (raw, Li)
+    ElementQuad
 
-Compute the raw double integral and the measure of elem_i.
+Pre-evaluated quadrature data for a single element: physical points `pts`,
+quadrature weights `wts`, and per-point `(unit normal, measure element)` pairs
+`nds`. `is_2d` records whether the 2-D (curve) kernel applies.
 
-For surface elements (:quad, :tri):
-  raw = ∬_Aᵢ ∬_Aⱼ K₃D dAⱼ dAᵢ,   Li = area of elem_i
-
-For curve elements (:line3):
-  raw = ∫_Lᵢ  ∫_Lⱼ  K₂D dLⱼ dLᵢ,  Li = arc length of elem_i
-
-The dimension is inferred from `elem_i.family`.
+Building this once per element (O(N)) and reusing it across all element pairs
+avoids the O(N²) re-evaluation of shape functions and quadrature rules that a
+naive pairwise loop would incur.
 """
-function element_pair_view_factor(coords::Matrix{Float64},
-                                   elem_i::SurfaceElement,
-                                   elem_j::SurfaceElement,
-                                   nquad ::Int,
-                                   bvh   ::Union{BVHTree, Nothing},
-                                   mesh_dim::Int = 2)::Tuple{Float64,Float64}
+struct ElementQuad
+    pts   :: Vector{SVector{3,Float64}}
+    wts   :: Vector{Float64}
+    nds   :: Vector{Tuple{SVector{3,Float64},Float64}}
+    is_2d :: Bool
+    Li    :: Float64   # element measure (area / arc length) = Σ wₚ dLₚ
+end
 
+"""Whether the 2-D (per-unit-depth) kernel applies to `elem` for this mesh."""
+@inline element_is_2d(elem::SurfaceElement, mesh_dim::Int) =
+    mesh_dim == 1 || elem.family === :line2 || elem.family === :line3
+
+"""
+    precompute_quad(coords, elem, nquad, mesh_dim=2) -> ElementQuad
+
+Evaluate the quadrature points and geometric quantities for `elem` once.
+"""
+function precompute_quad(coords::Matrix{Float64}, elem::SurfaceElement,
+                          nquad::Int, mesh_dim::Int = 2)::ElementQuad
+    pts, wts, nds = _quad_points(coords, elem, nquad)
+    Li = 0.0
+    @inbounds for p in eachindex(wts)
+        Li += wts[p] * nds[p][2]
+    end
+    return ElementQuad(pts, wts, nds, element_is_2d(elem, mesh_dim), Li)
+end
+
+# Core double-integral over two pre-evaluated elements. Returns the raw integral.
+@inline function _integrate_pair(qi::ElementQuad, qj::ElementQuad,
+                                  bvh::Union{BVHTree,Nothing}, mesh_dim::Int)::Float64
     do_vis = bvh !== nothing
-    is_2d  = mesh_dim == 1 ||
-              elem_i.family === :line2 || elem_i.family === :line3
-
-    pts_i, wts_i, nds_i = _quad_points(coords, elem_i, nquad)
-    pts_j, wts_j, nds_j = _quad_points(coords, elem_j, nquad)
+    pts_i, wts_i, nds_i = qi.pts, qi.wts, qi.nds
+    pts_j, wts_j, nds_j = qj.pts, qj.wts, qj.nds
+    is_2d = qi.is_2d
 
     Fij = 0.0
-    Li  = 0.0
-
-    for p in eachindex(wts_i)
-        wi  = wts_i[p]
-        xi  = pts_i[p]
-        ni  = nds_i[p][1]
-        dLi = nds_i[p][2]
-
-        Li += wi * dLi
+    @inbounds for p in eachindex(wts_i)
+        wi  = wts_i[p]; xi = pts_i[p]; ni = nds_i[p][1]; dLi = nds_i[p][2]
 
         inner = 0.0
         for q in eachindex(wts_j)
-            wj  = wts_j[q]
-            xj  = pts_j[q]
-            nj  = nds_j[q][1]
-            dLj = nds_j[q][2]
+            wj  = wts_j[q]; xj = pts_j[q]; nj = nds_j[q][1]; dLj = nds_j[q][2]
 
             K = is_2d ? vf_kernel_2d(xi, ni, xj, nj) :
                         vf_kernel(xi, ni, xj, nj)
@@ -205,8 +214,42 @@ function element_pair_view_factor(coords::Matrix{Float64},
         end
         Fij += wi * inner * dLi
     end
+    return Fij
+end
 
-    return Fij, Li
+"""
+    element_pair_view_factor(qi::ElementQuad, qj::ElementQuad, bvh, mesh_dim=2) -> (raw, Li)
+
+Compute the raw double integral from pre-evaluated quadrature data. This is the
+fast path used by the assembly loop, where each element's quadrature is built
+once via [`precompute_quad`](@ref).
+"""
+@inline function element_pair_view_factor(qi::ElementQuad, qj::ElementQuad,
+                                          bvh::Union{BVHTree,Nothing},
+                                          mesh_dim::Int = 2)::Tuple{Float64,Float64}
+    return _integrate_pair(qi, qj, bvh, mesh_dim), qi.Li
+end
+
+"""
+    element_pair_view_factor(coords, elem_i, elem_j, nquad, bvh, mesh_dim=2) -> (raw, Li)
+
+Compute the raw double integral and the measure of `elem_i`. Convenience method
+that evaluates each element's quadrature on the fly; the assembly loop uses the
+faster [`ElementQuad`](@ref)-based method instead.
+
+For surface elements (:quad, :tri):  raw = ∬_Aᵢ ∬_Aⱼ K₃D dAⱼ dAᵢ, Li = area of elem_i.
+For curve elements (:line):           raw = ∫_Lᵢ ∫_Lⱼ K₂D dLⱼ dLᵢ, Li = arc length of elem_i.
+The dimension is inferred from `elem_i.family` (or forced by `mesh_dim=1`).
+"""
+function element_pair_view_factor(coords::Matrix{Float64},
+                                   elem_i::SurfaceElement,
+                                   elem_j::SurfaceElement,
+                                   nquad ::Int,
+                                   bvh   ::Union{BVHTree, Nothing},
+                                   mesh_dim::Int = 2)::Tuple{Float64,Float64}
+    qi = precompute_quad(coords, elem_i, nquad, mesh_dim)
+    qj = precompute_quad(coords, elem_j, nquad, mesh_dim)
+    return _integrate_pair(qi, qj, bvh, mesh_dim), qi.Li
 end
 
 # ---------------------------------------------------------------------------

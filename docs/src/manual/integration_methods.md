@@ -57,9 +57,17 @@ standard quadrature for inclined-plate geometries.
 result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000)
 ```
 
-Each element pair draws `n_samples` stratified random sample pairs. Samples are
-placed on a ⌊√N⌋ × ⌊√N⌋ grid of strata within the reference element, giving
+Each element pair is estimated from `n_samples` stratified sample pairs. Samples
+are placed on a ⌊√N⌋ × ⌊√N⌋ grid of strata within the reference element, giving
 O(1/N) variance convergence rather than O(1/√N) for plain Monte Carlo.
+
+For efficiency, one independent stratified sample set is drawn **once per
+element** and reused across that element's pairings (the diagonal self-pair,
+with `self_vf=true`, draws a fresh second set). Within any pair the two
+elements' samples are still independent, so each entry's estimate remains
+unbiased with the stated variance; only estimates in the same row/column become
+correlated. This reuse is what makes the MC path ~12–15× faster than
+re-sampling both elements per pair — see the `benchmarks/` directory.
 
 **When to use:**
 - Many obstructions (MC pays the BVH cost only for kernel-positive pairs)
