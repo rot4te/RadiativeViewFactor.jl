@@ -9,9 +9,9 @@
 #   Fᵢⱼ = (1/Lᵢ) ∫_Lᵢ  ∫_Lⱼ  [cos θᵢ cos θⱼ / (2 r)]   H_ij  dLⱼ dLᵢ
 #
 # The dimension is inferred from the element family of elem_i:
-#   :line3  → 2D kernel and 1-D Gauss–Legendre quadrature
-#   :quad   → 3D kernel and 2-D Gauss–Legendre quadrature
-#   :tri    → 3D kernel and 2-D Dunavant quadrature
+#   :line3, :line2  → 2D kernel and 1-D Gauss–Legendre quadrature
+#   :quad,  :quad4  → 3D kernel and 2-D Gauss–Legendre quadrature
+#   :tri,   :tri3   → 3D kernel and 2-D Dunavant quadrature
 # ---------------------------------------------------------------------------
 
 module ViewFactorKernel
@@ -22,13 +22,14 @@ using LinearAlgebra
 import ..Quadrature:  gauss_legendre_1d, gauss_legendre_2d
 import ..Geometry:    quad8_physical_point, quad8_normal_and_area_element,
                       quad4_physical_point, quad4_normal_and_area_element,
+                      tri3_physical_point,  tri3_normal_and_area_element,
                       line3_physical_point, line3_normal_and_length_element,
                       line2_physical_point, line2_normal_and_length_element
 import ..BVH:         BVHTree
 import ..RayCast:     is_visible
 import ..MeshIO:      SurfaceElement
 
-export element_pair_view_factor
+export element_pair_view_factor, ElementQuad, precompute_quad, element_is_2d
 
 # ---------------------------------------------------------------------------
 # Dunavant quadrature rules for the reference triangle
@@ -52,27 +53,32 @@ function tri_quad_rule(nquad::Int)::TriQuadRule
                a1 a1 b1 a2 a2 b2 1/3]
         w1=0.125939180544827/2; w2=0.132394440720100/2; w3=0.225/2
         return TriQuadRule(pts, [w1,w1,w1, w2,w2,w2, w3])
-    else   # 13-point Dunavant degree 7 (weights for reference area 1/2)
-        # Three symmetric orbits (mult 3, 3, 6) plus the centroid, which
-        # carries a negative weight. Barycentric (L1,L2,L3) → (ξ,η)=(L2,L3).
-        cen = 1/3
-        a1=0.260345966079038; b1=1-2a1   # orbit A (mult 3)
-        a2=0.065130102902216; b2=1-2a2   # orbit B (mult 3)
-        a3=0.048690315425316; b3=0.312865496004875; c3=1-a3-b3   # orbit C (mult 6)
-        # Orbit C: all 6 distinct (ξ,η) permutations of barycentric (a3,b3,c3).
-        pts = [a1  b1  a1   a2  b2  a2   a3  b3  a3  c3  b3  c3   cen;
-               a1  a1  b1   a2  a2  b2   b3  a3  c3  a3  c3  b3   cen]
-        wc = -0.149570044467670/2
-        wA =  0.175615257433204/2
-        wB =  0.053347235608839/2
-        wC =  0.077113760890257/2
-        return TriQuadRule(pts, [wA,wA,wA, wB,wB,wB, wC,wC,wC,wC,wC,wC, wc])
+    else   # 13-point Dunavant degree 7
+        # Symmetric orbits (α,β,β): the three permutations in (ξ,η)=(L2,L3) are
+        # (β,β),(α,β),(β,α) with α=1-2β.  General orbit (α,β,γ): six perms.
+        a1=0.0651301029022;  b1=1-2a1               # β2  (α2=0.86973979)
+        a2=0.2603459660790;  b2=1-2a2               # β1  (α1=0.47930807)
+        a3=0.0486903154254;  b3=0.6384441885698; c3=1-a3-b3   # general orbit
+        pts = [a1  b1  a1  a2  b2  a2  a3  b3  c3  a3  b3  c3  1/3;
+               a1  a1  b1  a2  a2  b2  b3  a3  a3  c3  c3  b3  1/3]
+        w1=0.0533472356088/2; w2=0.1756152576332/2
+        w3=0.0771137608903/2; w4=-0.1495700444677/2   # centroid weight is negative
+        return TriQuadRule(pts, [w1,w1,w1, w2,w2,w2, w3,w3,w3,w3,w3,w3, w4])
     end
 end
 
 # ---------------------------------------------------------------------------
 # Tri6 shape functions
 # ---------------------------------------------------------------------------
+
+# tri3_shape is defined here (not only in Geometry) so tests can access it as
+# RadiativeViewFactor.ViewFactorKernel.tri3_shape
+@inline function tri3_shape(ξ::Float64, η::Float64)
+    N    = SVector(1.0-ξ-η, ξ, η)
+    dNdξ = SVector(-1.0, 1.0, 0.0)
+    dNdη = SVector(-1.0, 0.0, 1.0)
+    return N, dNdξ, dNdη
+end
 
 @inline function tri6_shape(ξ::Float64, η::Float64)
     L1 = 1.0-ξ-η; L2 = ξ; L3 = η
@@ -100,44 +106,6 @@ end
     _, dNdξ, dNdη = tri6_shape(ξ, η)
     dxdξ = @SVector zeros(3); dxdη = @SVector zeros(3)
     for a in 1:6
-        xa   = SVector{3,Float64}(coords[1,nodes[a]], coords[2,nodes[a]], coords[3,nodes[a]])
-        dxdξ = dxdξ + dNdξ[a]*xa
-        dxdη = dxdη + dNdη[a]*xa
-    end
-    c  = cross(dxdξ, dxdη)
-    dA = norm(c)
-    return c/dA, dA
-end
-
-# ---------------------------------------------------------------------------
-# Tri3 shape functions (3-node linear triangle, Gmsh type 2)
-# ---------------------------------------------------------------------------
-
-@inline function tri3_shape(ξ::Float64, η::Float64)
-    N    = SVector(1.0-ξ-η, ξ, η)
-    dNdξ = SVector(-1.0, 1.0, 0.0)
-    dNdη = SVector(-1.0, 0.0, 1.0)
-    return N, dNdξ, dNdη
-end
-
-@inline function tri3_physical_point(coords::Matrix{Float64},
-                                      nodes ::Vector{Int},
-                                      ξ::Float64, η::Float64)::SVector{3,Float64}
-    N, _, _ = tri3_shape(ξ, η)
-    x = @SVector zeros(3)
-    for a in 1:3
-        xa = SVector{3,Float64}(coords[1,nodes[a]], coords[2,nodes[a]], coords[3,nodes[a]])
-        x  = x + N[a]*xa
-    end
-    return x
-end
-
-@inline function tri3_normal_and_area_element(coords::Matrix{Float64},
-                                               nodes ::Vector{Int},
-                                               ξ::Float64, η::Float64)
-    _, dNdξ, dNdη = tri3_shape(ξ, η)
-    dxdξ = @SVector zeros(3); dxdη = @SVector zeros(3)
-    for a in 1:3
         xa   = SVector{3,Float64}(coords[1,nodes[a]], coords[2,nodes[a]], coords[3,nodes[a]])
         dxdξ = dxdξ + dNdξ[a]*xa
         dxdη = dxdη + dNdη[a]*xa
@@ -184,48 +152,58 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    element_pair_view_factor(coords, elem_i, elem_j, nquad, bvh) -> (raw, Li)
+    ElementQuad
 
-Compute the raw double integral and the measure of elem_i.
+Pre-evaluated quadrature data for a single element: physical points `pts`,
+quadrature weights `wts`, and per-point `(unit normal, measure element)` pairs
+`nds`. `is_2d` records whether the 2-D (curve) kernel applies.
 
-For surface elements (:quad, :tri):
-  raw = ∬_Aᵢ ∬_Aⱼ K₃D dAⱼ dAᵢ,   Li = area of elem_i
-
-For curve elements (:line3):
-  raw = ∫_Lᵢ  ∫_Lⱼ  K₂D dLⱼ dLᵢ,  Li = arc length of elem_i
-
-The dimension is inferred from `elem_i.family`.
+Building this once per element (O(N)) and reusing it across all element pairs
+avoids the O(N²) re-evaluation of shape functions and quadrature rules that a
+naive pairwise loop would incur.
 """
-function element_pair_view_factor(coords::Matrix{Float64},
-                                   elem_i::SurfaceElement,
-                                   elem_j::SurfaceElement,
-                                   nquad ::Int,
-                                   bvh   ::Union{BVHTree, Nothing},
-                                   mesh_dim::Int = 2)::Tuple{Float64,Float64}
+struct ElementQuad
+    pts   :: Vector{SVector{3,Float64}}
+    wts   :: Vector{Float64}
+    nds   :: Vector{Tuple{SVector{3,Float64},Float64}}
+    is_2d :: Bool
+    Li    :: Float64   # element measure (area / arc length) = Σ wₚ dLₚ
+end
 
+"""Whether the 2-D (per-unit-depth) kernel applies to `elem` for this mesh."""
+@inline element_is_2d(elem::SurfaceElement, mesh_dim::Int) =
+    mesh_dim == 1 || elem.family === :line2 || elem.family === :line3
+
+"""
+    precompute_quad(coords, elem, nquad, mesh_dim=2) -> ElementQuad
+
+Evaluate the quadrature points and geometric quantities for `elem` once.
+"""
+function precompute_quad(coords::Matrix{Float64}, elem::SurfaceElement,
+                          nquad::Int, mesh_dim::Int = 2)::ElementQuad
+    pts, wts, nds = _quad_points(coords, elem, nquad)
+    Li = 0.0
+    @inbounds for p in eachindex(wts)
+        Li += wts[p] * nds[p][2]
+    end
+    return ElementQuad(pts, wts, nds, element_is_2d(elem, mesh_dim), Li)
+end
+
+# Core double-integral over two pre-evaluated elements. Returns the raw integral.
+@inline function _integrate_pair(qi::ElementQuad, qj::ElementQuad,
+                                  bvh::Union{BVHTree,Nothing}, mesh_dim::Int)::Float64
     do_vis = bvh !== nothing
-    is_2d  = mesh_dim == 1
-
-    pts_i, wts_i, nds_i = _quad_points(coords, elem_i, nquad)
-    pts_j, wts_j, nds_j = _quad_points(coords, elem_j, nquad)
+    pts_i, wts_i, nds_i = qi.pts, qi.wts, qi.nds
+    pts_j, wts_j, nds_j = qj.pts, qj.wts, qj.nds
+    is_2d = qi.is_2d
 
     Fij = 0.0
-    Li  = 0.0
-
-    for p in eachindex(wts_i)
-        wi  = wts_i[p]
-        xi  = pts_i[p]
-        ni  = nds_i[p][1]
-        dLi = nds_i[p][2]
-
-        Li += wi * dLi
+    @inbounds for p in eachindex(wts_i)
+        wi  = wts_i[p]; xi = pts_i[p]; ni = nds_i[p][1]; dLi = nds_i[p][2]
 
         inner = 0.0
         for q in eachindex(wts_j)
-            wj  = wts_j[q]
-            xj  = pts_j[q]
-            nj  = nds_j[q][1]
-            dLj = nds_j[q][2]
+            wj  = wts_j[q]; xj = pts_j[q]; nj = nds_j[q][1]; dLj = nds_j[q][2]
 
             K = is_2d ? vf_kernel_2d(xi, ni, xj, nj) :
                         vf_kernel(xi, ni, xj, nj)
@@ -236,8 +214,42 @@ function element_pair_view_factor(coords::Matrix{Float64},
         end
         Fij += wi * inner * dLi
     end
+    return Fij
+end
 
-    return Fij, Li
+"""
+    element_pair_view_factor(qi::ElementQuad, qj::ElementQuad, bvh, mesh_dim=2) -> (raw, Li)
+
+Compute the raw double integral from pre-evaluated quadrature data. This is the
+fast path used by the assembly loop, where each element's quadrature is built
+once via [`precompute_quad`](@ref).
+"""
+@inline function element_pair_view_factor(qi::ElementQuad, qj::ElementQuad,
+                                          bvh::Union{BVHTree,Nothing},
+                                          mesh_dim::Int = 2)::Tuple{Float64,Float64}
+    return _integrate_pair(qi, qj, bvh, mesh_dim), qi.Li
+end
+
+"""
+    element_pair_view_factor(coords, elem_i, elem_j, nquad, bvh, mesh_dim=2) -> (raw, Li)
+
+Compute the raw double integral and the measure of `elem_i`. Convenience method
+that evaluates each element's quadrature on the fly; the assembly loop uses the
+faster [`ElementQuad`](@ref)-based method instead.
+
+For surface elements (:quad, :tri):  raw = ∬_Aᵢ ∬_Aⱼ K₃D dAⱼ dAᵢ, Li = area of elem_i.
+For curve elements (:line):           raw = ∫_Lᵢ ∫_Lⱼ K₂D dLⱼ dLᵢ, Li = arc length of elem_i.
+The dimension is inferred from `elem_i.family` (or forced by `mesh_dim=1`).
+"""
+function element_pair_view_factor(coords::Matrix{Float64},
+                                   elem_i::SurfaceElement,
+                                   elem_j::SurfaceElement,
+                                   nquad ::Int,
+                                   bvh   ::Union{BVHTree, Nothing},
+                                   mesh_dim::Int = 2)::Tuple{Float64,Float64}
+    qi = precompute_quad(coords, elem_i, nquad, mesh_dim)
+    qj = precompute_quad(coords, elem_j, nquad, mesh_dim)
+    return _integrate_pair(qi, qj, bvh, mesh_dim), qi.Li
 end
 
 # ---------------------------------------------------------------------------
@@ -245,57 +257,75 @@ end
 # ---------------------------------------------------------------------------
 
 function _quad_points(coords::Matrix{Float64}, elem::SurfaceElement, nquad::Int)
-    if elem.family === :quad || elem.family === :quad4
+    if elem.family === :quad
         rule = gauss_legendre_2d(nquad)
         nq   = size(rule.points, 2)
         xs   = Vector{SVector{3,Float64}}(undef, nq)
         nds  = Vector{Tuple{SVector{3,Float64},Float64}}(undef, nq)
-        is8  = elem.family === :quad
         for k in 1:nq
             ξ, η   = rule.points[1,k], rule.points[2,k]
-            if is8
-                xs[k]  = quad8_physical_point(coords, elem.nodes, ξ, η)
-                n, dA  = quad8_normal_and_area_element(coords, elem.nodes, ξ, η)
-            else
-                xs[k]  = quad4_physical_point(coords, elem.nodes, ξ, η)
-                n, dA  = quad4_normal_and_area_element(coords, elem.nodes, ξ, η)
-            end
+            xs[k]  = quad8_physical_point(coords, elem.nodes, ξ, η)
+            n, dA  = quad8_normal_and_area_element(coords, elem.nodes, ξ, η)
             nds[k] = (n, dA)
         end
         return xs, rule.weights, nds
-    elseif elem.family === :tri || elem.family === :tri3
+    elseif elem.family === :quad4
+        rule = gauss_legendre_2d(nquad)
+        nq   = size(rule.points, 2)
+        xs   = Vector{SVector{3,Float64}}(undef, nq)
+        nds  = Vector{Tuple{SVector{3,Float64},Float64}}(undef, nq)
+        for k in 1:nq
+            ξ, η   = rule.points[1,k], rule.points[2,k]
+            xs[k]  = quad4_physical_point(coords, elem.nodes, ξ, η)
+            n, dA  = quad4_normal_and_area_element(coords, elem.nodes, ξ, η)
+            nds[k] = (n, dA)
+        end
+        return xs, rule.weights, nds
+    elseif elem.family === :tri
         rule = tri_quad_rule(nquad)
         nq   = size(rule.points, 2)
         xs   = Vector{SVector{3,Float64}}(undef, nq)
         nds  = Vector{Tuple{SVector{3,Float64},Float64}}(undef, nq)
-        is6  = elem.family === :tri
         for k in 1:nq
             ξ, η   = rule.points[1,k], rule.points[2,k]
-            if is6
-                xs[k]  = tri6_physical_point(coords, elem.nodes, ξ, η)
-                n, dA  = tri6_normal_and_area_element(coords, elem.nodes, ξ, η)
-            else
-                xs[k]  = tri3_physical_point(coords, elem.nodes, ξ, η)
-                n, dA  = tri3_normal_and_area_element(coords, elem.nodes, ξ, η)
-            end
+            xs[k]  = tri6_physical_point(coords, elem.nodes, ξ, η)
+            n, dA  = tri6_normal_and_area_element(coords, elem.nodes, ξ, η)
             nds[k] = (n, dA)
         end
         return xs, rule.weights, nds
-    else  # :line3 / :line2 — 1-D Gauss–Legendre on [-1,1]
+    elseif elem.family === :tri3
+        rule = tri_quad_rule(nquad)
+        nq   = size(rule.points, 2)
+        xs   = Vector{SVector{3,Float64}}(undef, nq)
+        nds  = Vector{Tuple{SVector{3,Float64},Float64}}(undef, nq)
+        for k in 1:nq
+            ξ, η   = rule.points[1,k], rule.points[2,k]
+            xs[k]  = tri3_physical_point(coords, elem.nodes, ξ, η)
+            n, dA  = tri3_normal_and_area_element(coords, elem.nodes, ξ, η)
+            nds[k] = (n, dA)
+        end
+        return xs, rule.weights, nds
+    elseif elem.family === :line3
         pts1d, wts1d = gauss_legendre_1d(nquad)
         nq   = length(pts1d)
         xs   = Vector{SVector{3,Float64}}(undef, nq)
         nds  = Vector{Tuple{SVector{3,Float64},Float64}}(undef, nq)
-        is3  = elem.family === :line3
         for k in 1:nq
             ξ      = pts1d[k]
-            if is3
-                xs[k]  = line3_physical_point(coords, elem.nodes, ξ)
-                n, dL  = line3_normal_and_length_element(coords, elem.nodes, ξ)
-            else
-                xs[k]  = line2_physical_point(coords, elem.nodes, ξ)
-                n, dL  = line2_normal_and_length_element(coords, elem.nodes, ξ)
-            end
+            xs[k]  = line3_physical_point(coords, elem.nodes, ξ)
+            n, dL  = line3_normal_and_length_element(coords, elem.nodes, ξ)
+            nds[k] = (n, dL)
+        end
+        return xs, wts1d, nds
+    else  # :line2 — 1-D Gauss–Legendre on [-1,1]
+        pts1d, wts1d = gauss_legendre_1d(nquad)
+        nq   = length(pts1d)
+        xs   = Vector{SVector{3,Float64}}(undef, nq)
+        nds  = Vector{Tuple{SVector{3,Float64},Float64}}(undef, nq)
+        for k in 1:nq
+            ξ      = pts1d[k]
+            xs[k]  = line2_physical_point(coords, elem.nodes, ξ)
+            n, dL  = line2_normal_and_length_element(coords, elem.nodes, ξ)
             nds[k] = (n, dL)
         end
         return xs, wts1d, nds

@@ -66,9 +66,17 @@ const _GL_TABLE = Dict{Int, Tuple{Vector{Float64}, Vector{Float64}}}(
 Return the `n`-point Gauss–Legendre rule on [-1, 1].
 Pre-tabulated for n ≤ 5; uses the Golub–Welsch algorithm otherwise.
 """
+# Cache for Golub–Welsch rules (n > 5). The eigensolve is a pure function of n,
+# so results are memoised; a lock guards concurrent first-time access from the
+# threaded assembly loop.
+const _GL_CACHE = Dict{Int, Tuple{Vector{Float64}, Vector{Float64}}}()
+const _GL_LOCK  = ReentrantLock()
+
 function gauss_legendre_1d(n::Int)
     haskey(_GL_TABLE, n) && return _GL_TABLE[n]
-    return _golub_welsch(n)
+    lock(_GL_LOCK) do
+        get!(() -> _golub_welsch(n), _GL_CACHE, n)
+    end
 end
 
 """Golub–Welsch algorithm for arbitrary n."""

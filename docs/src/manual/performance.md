@@ -1,5 +1,33 @@
 # Performance Guide
 
+## Assembly cost and quadrature reuse
+
+The view factor matrix is dense and assembly is O(N²) in the element count `N`.
+To keep the per-pair work minimal, each element's quadrature points, normals,
+and area elements (deterministic path) — or its stratified Monte Carlo samples
+(MC path) — are **pre-evaluated once per element** and reused across every
+element pair, instead of being rebuilt inside the pair loop.
+
+Concretely, `compute_view_factors` builds one `ElementQuad` (or `ElementSamples`
+for `monte_carlo=true`) per element up front, then feeds the cached data into
+the pair integrator. This removes the O(N²) reconstruction of shape functions
+and quadrature rules that a naive pairwise evaluation would incur, and for
+`nquad > 5` it also avoids re-running the Golub–Welsch eigensolve per pair (the
+rule is memoized).
+
+The change is purely an evaluation-order optimization — results are numerically
+identical, reciprocity holds to machine precision, and analytic view factors are
+unchanged. Measured on an 8-core CPU it gives roughly:
+
+| Path | Speedup | Allocation reduction |
+|---|---|---|
+| Deterministic quadrature | ~2.6–3.1× | ~60–80× |
+| Monte Carlo | ~12–15× | ~350–450× |
+
+The Monte Carlo path benefits more because it previously re-sampled *both*
+elements on every pair. Reproducible benchmark scripts and the full
+before/after tables live in the `benchmarks/` directory (`benchmarks/RESULTS.md`).
+
 ## Choosing `nquad`
 
 For well-separated elements, `nquad=4` (16 quadrature points per element pair)
@@ -55,7 +83,9 @@ julia --threads=8 script.jl
 JULIA_NUM_THREADS=8 julia script.jl
 ```
 
-Each thread has its own RNG instance (for Monte Carlo) to avoid lock contention.
+For Monte Carlo, one independent RNG is pre-generated per row (seeded from the
+`rng` you pass), so results are reproducible and free of lock contention
+regardless of how Julia schedules the threads.
 
 ## Memory
 

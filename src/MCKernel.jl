@@ -36,13 +36,14 @@ using Random
 
 import ..Geometry:    quad8_physical_point, quad8_normal_and_area_element,
                       quad4_physical_point, quad4_normal_and_area_element,
+                      tri3_physical_point,  tri3_normal_and_area_element,
                       line3_physical_point, line3_normal_and_length_element,
                       line2_physical_point, line2_normal_and_length_element
 import ..BVH:         BVHTree
 import ..RayCast:     is_visible
 import ..MeshIO:      SurfaceElement
 
-export element_pair_view_factor_mc
+export element_pair_view_factor_mc, ElementSamples, sample_element_mc
 
 # ---------------------------------------------------------------------------
 # Random point generation on reference elements
@@ -133,54 +134,94 @@ function _sample_element(coords::Matrix{Float64},
     ns  = Vector{SVector{3,Float64}}(undef, n)
     dAs = Vector{Float64}(undef, n)
 
-    if elem.family === :quad || elem.family === :quad4
+    if elem.family === :quad
         ref_pts, wt = _stratified_quad_points(n, rng)
-        is8 = elem.family === :quad
         for k in 1:n
             ξ, η    = ref_pts[k]
-            if is8
-                xs[k]   = quad8_physical_point(coords, elem.nodes, ξ, η)
-                nk, dAk = quad8_normal_and_area_element(coords, elem.nodes, ξ, η)
-            else
-                xs[k]   = quad4_physical_point(coords, elem.nodes, ξ, η)
-                nk, dAk = quad4_normal_and_area_element(coords, elem.nodes, ξ, η)
-            end
-            ns[k]   = nk
-            dAs[k]  = dAk
-        end
-        A = wt * sum(dAs)   # MC estimate of element area
-
-    elseif elem.family === :tri || elem.family === :tri3
-        ref_pts, wt = _stratified_tri_points(n, rng)
-        is6 = elem.family === :tri
-        for k in 1:n
-            ξ, η = ref_pts[k]
-            # Inline Tri6/Tri3 evaluation (Geometry tri functions not imported here)
-            xs[k], ns[k], dAs[k] = is6 ?
-                _tri6_point_normal_dA(coords, elem.nodes, ξ, η) :
-                _tri3_point_normal_dA(coords, elem.nodes, ξ, η)
+            xs[k]   = quad8_physical_point(coords, elem.nodes, ξ, η)
+            nk, dAk = quad8_normal_and_area_element(coords, elem.nodes, ξ, η)
+            ns[k]   = nk; dAs[k] = dAk
         end
         A = wt * sum(dAs)
-
-    else  # :line3 / :line2
-        ref_pts, wt = _stratified_line_points(n, rng)
-        is3 = elem.family === :line3
+    elseif elem.family === :quad4
+        ref_pts, wt = _stratified_quad_points(n, rng)
         for k in 1:n
-            ξ      = ref_pts[k]
-            if is3
-                xs[k]  = line3_physical_point(coords, elem.nodes, ξ)
-                nk, dLk = line3_normal_and_length_element(coords, elem.nodes, ξ)
-            else
-                xs[k]  = line2_physical_point(coords, elem.nodes, ξ)
-                nk, dLk = line2_normal_and_length_element(coords, elem.nodes, ξ)
-            end
-            ns[k]  = nk
-            dAs[k] = dLk
+            ξ, η    = ref_pts[k]
+            xs[k]   = quad4_physical_point(coords, elem.nodes, ξ, η)
+            nk, dAk = quad4_normal_and_area_element(coords, elem.nodes, ξ, η)
+            ns[k]   = nk; dAs[k] = dAk
+        end
+        A = wt * sum(dAs)
+    elseif elem.family === :tri
+        ref_pts, wt = _stratified_tri_points(n, rng)
+        for k in 1:n
+            ξ, η = ref_pts[k]
+            xs[k], ns[k], dAs[k] = _tri6_point_normal_dA(coords, elem.nodes, ξ, η)
+        end
+        A = wt * sum(dAs)
+    elseif elem.family === :tri3
+        ref_pts, wt = _stratified_tri_points(n, rng)
+        for k in 1:n
+            ξ, η    = ref_pts[k]
+            xs[k]   = tri3_physical_point(coords, elem.nodes, ξ, η)
+            nk, dAk = tri3_normal_and_area_element(coords, elem.nodes, ξ, η)
+            ns[k]   = nk; dAs[k] = dAk
+        end
+        A = wt * sum(dAs)
+    elseif elem.family === :line3
+        ref_pts, wt = _stratified_line_points(n, rng)
+        for k in 1:n
+            ξ        = ref_pts[k]
+            xs[k]    = line3_physical_point(coords, elem.nodes, ξ)
+            nk, dLk  = line3_normal_and_length_element(coords, elem.nodes, ξ)
+            ns[k]    = nk; dAs[k] = dLk
+        end
+        A = wt * sum(dAs)
+    else  # :line2
+        ref_pts, wt = _stratified_line_points(n, rng)
+        for k in 1:n
+            ξ        = ref_pts[k]
+            xs[k]    = line2_physical_point(coords, elem.nodes, ξ)
+            nk, dLk  = line2_normal_and_length_element(coords, elem.nodes, ξ)
+            ns[k]    = nk; dAs[k] = dLk
         end
         A = wt * sum(dAs)
     end
 
     return xs, ns, dAs, A
+end
+
+"""
+    ElementSamples
+
+Pre-drawn Monte Carlo samples for one element: physical positions `xs`, unit
+normals `ns`, raw Jacobians `dAs`, MC area estimate `A`, the reference-domain
+area `ref_area`, and sample count `n`.
+
+Drawing these once per element (O(N)) and reusing them across all element pairs
+avoids the O(N²) re-sampling a naive pairwise loop incurs. Each per-pair
+estimate stays unbiased: `xs` is uniform on the element and is paired with the
+other element's independent samples by stratum index, exactly as in the
+on-the-fly path.
+"""
+struct ElementSamples
+    xs       :: Vector{SVector{3,Float64}}
+    ns       :: Vector{SVector{3,Float64}}
+    dAs      :: Vector{Float64}
+    A        :: Float64
+    ref_area :: Float64
+    n        :: Int
+end
+
+"""
+    sample_element_mc(coords, elem, n, rng) -> ElementSamples
+
+Draw and cache `n` stratified samples on `elem` for reuse across pairs.
+"""
+function sample_element_mc(coords::Matrix{Float64}, elem::SurfaceElement,
+                            n::Int, rng::AbstractRNG)::ElementSamples
+    xs, ns, dAs, A = _sample_element(coords, elem, n, rng)
+    return ElementSamples(xs, ns, dAs, A, _ref_area(elem), n)
 end
 
 # Inline Tri6 point/normal/dA (avoids circular import with ViewFactorKernel)
@@ -191,20 +232,6 @@ end
     dNdη = SVector((4L1-1)*(-1.0), 0.0, 4L3-1, 4*L2*(-1.0), 4L2, 4*(L3*(-1.0)+L1))
     x=@SVector zeros(3); dxdξ=@SVector zeros(3); dxdη=@SVector zeros(3)
     for a in 1:6
-        xa=SVector{3,Float64}(coords[1,nodes[a]],coords[2,nodes[a]],coords[3,nodes[a]])
-        x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
-    end
-    c=cross(dxdξ,dxdη); dA=norm(c)
-    return x, c/dA, dA
-end
-
-# Inline Tri3 point/normal/dA (3-node linear triangle)
-@inline function _tri3_point_normal_dA(coords, nodes, ξ::Float64, η::Float64)
-    N    = SVector(1.0-ξ-η, ξ, η)
-    dNdξ = SVector(-1.0, 1.0, 0.0)
-    dNdη = SVector(-1.0, 0.0, 1.0)
-    x=@SVector zeros(3); dxdξ=@SVector zeros(3); dxdη=@SVector zeros(3)
-    for a in 1:3
         xa=SVector{3,Float64}(coords[1,nodes[a]],coords[2,nodes[a]],coords[3,nodes[a]])
         x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
     end
@@ -238,14 +265,30 @@ function element_pair_view_factor_mc(coords   ::Matrix{Float64},
                                       mesh_dim ::Int,
                                       rng      ::AbstractRNG)::Tuple{Float64,Float64}
 
+    si = sample_element_mc(coords, elem_i, n_samples, rng)
+    sj = sample_element_mc(coords, elem_j, n_samples, rng)
+    return element_pair_view_factor_mc(si, sj, bvh, mesh_dim)
+end
+
+"""
+    element_pair_view_factor_mc(si::ElementSamples, sj::ElementSamples, bvh, mesh_dim) -> (raw, Ai)
+
+Fast path used by the assembly loop: estimate the raw double integral from
+pre-drawn samples ([`sample_element_mc`](@ref)). `si` and `sj` must hold the
+same number of samples.
+"""
+function element_pair_view_factor_mc(si      ::ElementSamples,
+                                      sj      ::ElementSamples,
+                                      bvh     ::Union{BVHTree,Nothing},
+                                      mesh_dim::Int)::Tuple{Float64,Float64}
     do_vis = bvh !== nothing
     is_2d  = mesh_dim == 1
-
-    xs_i, ns_i, dAs_i, Ai = _sample_element(coords, elem_i, n_samples, rng)
-    xs_j, ns_j, dAs_j, Aj = _sample_element(coords, elem_j, n_samples, rng)
+    n      = si.n
+    xs_i, ns_i, dAs_i = si.xs, si.ns, si.dAs
+    xs_j, ns_j, dAs_j = sj.xs, sj.ns, sj.dAs
 
     K_sum = 0.0
-    for k in 1:n_samples
+    @inbounds for k in 1:n
         xi = xs_i[k]; ni = ns_i[k]; dAi = dAs_i[k]
         xj = xs_j[k]; nj = ns_j[k]; dAj = dAs_j[k]
 
@@ -259,26 +302,17 @@ function element_pair_view_factor_mc(coords   ::Matrix{Float64},
         K_sum += K * dAi * dAj
     end
 
-    # MC estimate: (Ai * Aj / n) * (1/(Ai*Aj)) * Σ K*dAi*dAj
-    # = (1/n) * Σ K*dAi*dAj   ... but we need to normalise by the
-    # reference domain areas already absorbed into dAi,dAj via the
-    # stratified weights.  The stratified sampler already divides by n
-    # in the weight wt = ref_area/n, so:
-    #   _sample_element returns dAs without the 1/n factor (raw Jacobian)
-    #   Ai = wt * Σ dAs_i  =  (ref_area/n) * Σ dAs_i
-    # The MC estimator for ∬K dAi dAj is:
-    #   (ref_area_i / n) * (ref_area_j / n) * Σ K * dAi * dAj
-    # But since Ai = (ref_area_i/n)*Σ dAs_i and similarly for Aj,
-    # we absorb the normalisation directly:
-    raw = K_sum * _ref_area(elem_i) * _ref_area(elem_j) / n_samples
-
-    return raw, Ai
+    # MC estimator for ∬K dAi dAj.  The stratified sampler returns raw
+    # Jacobians dAs (no 1/n factor), with Ai = (ref_area_i/n)*Σ dAs_i, so
+    # the reference-domain areas and the 1/n normalisation are folded in here:
+    raw = K_sum * si.ref_area * sj.ref_area / n
+    return raw, si.A
 end
 
 @inline _ref_area(el::SurfaceElement) =
     (el.family === :quad || el.family === :quad4) ? 4.0 :   # [-1,1]²
     (el.family === :tri  || el.family === :tri3)  ? 0.5 :   # reference triangle
-                                                    2.0     # [-1,1] (line2/line3)
+                                                    2.0     # [-1,1]
 
 @inline function _kernel_3d(xi, ni, xj, nj)
     r_vec = xj - xi
