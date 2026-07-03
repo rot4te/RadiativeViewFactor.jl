@@ -15,11 +15,20 @@ extension: `.msh` (v2.2 and v4), `.stl`, `.step`/`.stp`, Nastran `.bdf`/`.nas`,
 XML-form `.vtk`) are detected automatically and read through ReadVTK.jl, which
 must be loaded (`using ReadVTK`).
 
+Nek5000/NekRS `.re2` binary meshes are also supported, through a dedicated
+in-tree parser (Gmsh cannot open them). A 3D hex volume mesh's boundary faces
+are extracted as radiating Quad4 surfaces, grouped by their Nek
+boundary-condition label, with normals oriented into the fluid cavity. Word size
+(4- or 8-byte reals) and byte order are auto-detected. See [`load_re2`](@ref).
+Only 3D `.re2` meshes are handled (`surface_dim=2`).
+
 Radiating geometry is partitioned by **named groups**. In Gmsh these are
 Physical Surface (3D) or Physical Curve (2D) groups. Formats that cannot carry
 named groups (e.g. STL) fall back to a single synthetic `"default"` group; for
 VTK, a per-cell integer region array can be used instead (see
-[`load_vtu`](@ref)).
+[`load_vtu`](@ref)). For `.re2`, the boundary-condition labels are the group
+names (internal `E`/`P` connectivity faces are skipped); if none are present the
+topological boundary is taken as a single `"default"` group.
 
 ## Surface meshes (`surface_dim=2`)
 

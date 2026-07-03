@@ -18,6 +18,11 @@ any format readable by [Gmsh](https://gmsh.info/) is supported, plus XML VTK
   Nastran `.bdf`/`.nas`, `.med`, legacy `.vtk`, etc. XML VTK unstructured grids
   (`.vtu`, XML-form `.vtk`) are auto-detected and read through ReadVTK.jl when
   `using ReadVTK` is in scope.
+- **Nek5000/NekRS `.re2` binary meshes**: 3D hex volume meshes are read by a
+  dedicated in-tree parser (Gmsh cannot open them). Boundary faces become
+  radiating Quad4 surfaces, grouped by their Nek boundary-condition label, with
+  normals oriented into the fluid cavity. Word size (4- or 8-byte reals) and
+  byte order are auto-detected.
 - **1st- and 2nd-order elements**, in any mix within one mesh:
   - **3D surface meshes** (`surface_dim=2`): Tri3, Quad4 (1st order); Tri6, Quad8,
     Quad9 (centre node dropped) (2nd order)
@@ -140,6 +145,12 @@ mesh = load_mesh("assembly.step")
 using ReadVTK
 mesh = load_mesh("grid.vtu")                       # auto-detected
 mesh = load_vtu("grid.vtu"; group_field="RegionId") # per-cell region → groups
+
+# Nek5000/NekRS .re2 (3D hex) → boundary faces grouped by BC label:
+mesh = load_mesh("cavity.re2")     # auto-detected; no extra dependency
+mesh = load_re2("cavity.re2")      # or call the loader directly
+# Groups are the Nek boundary-condition labels (e.g. "W", "v", "O"); normals
+# point into the fluid cavity. Use reverse_normals=true for the opposite sense.
 ```
 
 ### Obstruction detection

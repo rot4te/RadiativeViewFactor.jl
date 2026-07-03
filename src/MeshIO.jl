@@ -90,6 +90,11 @@ XML VTK files (`.vtu` and XML-form `.vtk`) are detected automatically and read
 through ReadVTK.jl (a weak dependency — `using ReadVTK` must be in scope).
 Legacy ASCII/binary `.vtk` files are not handled by ReadVTK and fall through to
 the Gmsh importer. See [`load_vtu`](@ref) for VTK-specific options.
+
+Nek5000/NekRS `.re2` binary meshes are detected by extension and read by a
+dedicated in-tree parser (Gmsh cannot open them). The 3D hex volume mesh's
+boundary faces become radiating Quad4 surfaces grouped by Nek boundary-condition
+label. See [`load_re2`](@ref).
 """
 function load_mesh(filename::AbstractString;
                    surface_dim    ::Int  = 2,
@@ -97,6 +102,11 @@ function load_mesh(filename::AbstractString;
                    verbose        ::Bool = true)::MeshData
     isfile(filename) || error("Mesh file not found: $filename")
     surface_dim ∈ (1, 2) || error("surface_dim must be 1 or 2, got $surface_dim")
+    # Nek5000/NekRS binary meshes (.re2) are read by a dedicated in-tree parser;
+    # Gmsh cannot open them.
+    if _is_re2(filename)
+        return load_re2(filename; surface_dim, reverse_normals, verbose)
+    end
     # XML VTK (.vtu / XML .vtk) is read via the ReadVTK extension; everything
     # else goes through Gmsh (which also reads legacy .vtk partially).
     if _is_xml_vtk(filename)
@@ -682,6 +692,287 @@ function _build_group_obs_soups(coords     ::Matrix{Float64},
         end
     end
     return soups
+end
+
+# ---------------------------------------------------------------------------
+# Nek5000 / NekRS  .re2  binary meshes
+# ---------------------------------------------------------------------------
+# A .re2 file stores a 2D (quad) or 3D (hex) spectral-element *volume* mesh:
+#
+#   [ 80-byte ASCII header:  "#vNNN" nelgt ndim nelgv (fixed-width ints) ]
+#   [ 4-byte float endian-test tag = 6.54321                            ]
+#   [ geometry: per element  igroup + corner coords                     ]
+#   [ curved-side block:      ncurve, then ncurve records               ]
+#   [ boundary-condition block: per field  nbc, then nbc records        ]
+#
+# For radiative view factors we take the *boundary faces* of the 3D hex mesh as
+# the radiating Quad4 surfaces, grouped by their Nek boundary-condition label.
+# All binary reals are `wdsize`-byte (8 in modern files, 4 in older ones) and
+# may be byte-swapped; both are auto-detected. A curve/BC record is laid out as
+# 7 reals (element, face, 5 params) followed by an 8-byte character code, so a
+# record is `7*wdsize + 8` bytes. The whole layout is cross-checked against the
+# file size, which pins down `wdsize` and the number of BC fields.
+#
+# Nek hex corner order (symmetric preprocessor convention):
+#   1:(-,-,-) 2:(+,-,-) 3:(+,+,-) 4:(-,+,-) 5:(-,-,+) 6:(+,-,+) 7:(+,+,+) 8:(-,+,+)
+# and local face → corner map (BC `iside` is 1-based into this tuple):
+const _RE2_HEX_FACE = ((1,2,6,5), (2,3,7,6), (3,4,8,7),
+                       (4,1,5,8), (1,2,3,4), (5,6,7,8))
+# Boundary-condition codes that denote *internal* connections (not radiating):
+const _RE2_INTERNAL_BC = Set(["E", "P", ""])
+
+_is_re2(filename::AbstractString)::Bool =
+    lowercase(splitext(filename)[2]) == ".re2"
+
+# Read `n` reals of element type `T` from `bytes` at 0-based `off`; returns the
+# values as Float64 and the new offset. `swap` byte-swaps for foreign endianness.
+function _re2_reals(bytes::Vector{UInt8}, off::Int, n::Int, ::Type{T},
+                    swap::Bool) where {T<:AbstractFloat}
+    w   = sizeof(T)
+    nb  = n * w
+    raw = bytes[off+1 : off+nb]
+    if swap                              # reverse each w-byte group in place
+        @inbounds for i in 0:n-1
+            reverse!(view(raw, i*w+1 : (i+1)*w))
+        end
+    end
+    out = Float64.(reinterpret(T, raw))
+    return out, off + nb
+end
+
+# Parse the full .re2 payload for a given word size / endianness. Returns
+# `(ok, corners, bc)` where `corners` is (3, 8, nelgt) hex corner coordinates
+# and `bc` is a vector of (element, face, code) boundary records. `ok` is false
+# (without throwing) when the layout does not consume the file exactly, so the
+# caller can try a different `wdsize`.
+function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
+                    wdsize::Int, swap::Bool)
+    T       = wdsize == 8 ? Float64 : Float32
+    nvert   = 2^ndim                       # 8 corners (3D), 4 (2D)
+    ncoord  = ndim * nvert
+    recsize = 7 * wdsize + 8               # curve / bc record: 7 reals + char*8
+    total   = length(bytes)
+    off     = 84                           # 80-byte header + 4-byte endian tag
+
+    corners = Array{Float64,3}(undef, 3, nvert, nelgt)
+    for e in 1:nelgt
+        vals, off = _re2_reals(bytes, off, 1 + ncoord, T, swap)   # igroup + coords
+        off > total && return (false, corners, Tuple{Int,Int,String}[])
+        @inbounds for v in 1:nvert
+            corners[1, v, e] = vals[1 + v]                 # x block
+            corners[2, v, e] = vals[1 + nvert + v]         # y block
+            corners[3, v, e] = ndim == 3 ? vals[1 + 2nvert + v] : 0.0
+        end
+    end
+
+    # curved-side block: count, then ncurve records (skipped — corners suffice)
+    off + wdsize > total && return (false, corners, Tuple{Int,Int,String}[])
+    cval, off = _re2_reals(bytes, off, 1, T, swap)
+    ncurve    = round(Int, cval[1])
+    (ncurve < 0 || off + ncurve*recsize > total) &&
+        return (false, corners, Tuple{Int,Int,String}[])
+    off += ncurve * recsize
+
+    # boundary-condition block: one or more fields, each `nbc` then nbc records
+    bc = Tuple{Int,Int,String}[]
+    while off < total
+        off + wdsize > total && return (false, corners, bc)
+        nval, off = _re2_reals(bytes, off, 1, T, swap)
+        nbc       = round(Int, nval[1])
+        (nbc < 0 || nbc > 6*nelgt || off + nbc*recsize > total) &&
+            return (false, corners, bc)
+        for _ in 1:nbc
+            r, off = _re2_reals(bytes, off, 7, T, swap)   # elem, face, 5 params
+            code   = rstrip(String(bytes[off+1 : off+3]), [' ', '\0'])  # char*8 slot
+            off   += 8
+            push!(bc, (round(Int, r[1]), round(Int, r[2]), code))
+        end
+    end
+
+    return (off == total, corners, bc)
+end
+
+"""
+    load_re2(filename; surface_dim=2, reverse_normals=false, verbose=true) -> MeshData
+
+Load a Nek5000/NekRS `.re2` binary mesh. The 3D hex volume mesh's boundary
+faces become radiating Quad4 surfaces, grouped by their Nek boundary-condition
+label (internal `E`/`P` faces are skipped). Word size (4- or 8-byte reals) and
+byte order are auto-detected. Only `surface_dim=2` (3D → surfaces) is supported.
+"""
+function load_re2(filename::AbstractString;
+                  surface_dim    ::Int  = 2,
+                  reverse_normals::Bool = false,
+                  verbose        ::Bool = true)::MeshData
+    surface_dim == 2 ||
+        error(".re2 loading supports 3D hex volume meshes → surfaces only " *
+              "(surface_dim=2); got surface_dim=$surface_dim.")
+
+    bytes = read(filename)
+    length(bytes) >= 84 || error("File too small to be a valid .re2: $filename")
+
+    header = String(bytes[1:80])
+    startswith(header, "#v") ||
+        error("Not a .re2 file (missing \"#v\" version header): $filename")
+    fields = split(strip(header[6:end]))
+    length(fields) >= 2 ||
+        error("Malformed .re2 header: \"$(strip(header))\"")
+    nelgt = parse(Int, fields[1])
+    ndim  = parse(Int, fields[2])
+    ndim == 3 ||
+        error(".re2 file is $(ndim)D; only 3D hex meshes are supported for " *
+              "surface view factors.")
+
+    # Endian test tag: real*4 = 6.54321.
+    tagbytes = bytes[81:84]
+    tag_native  = reinterpret(Float32, tagbytes)[1]
+    tag_swapped = reinterpret(Float32, reverse(tagbytes))[1]
+    swap = if abs(tag_native - 6.54321f0) < 1f-3
+        false
+    elseif abs(tag_swapped - 6.54321f0) < 1f-3
+        true
+    else
+        error("Unrecognised .re2 endian test tag ($tag_native); file may be corrupt.")
+    end
+
+    # Auto-detect word size by which layout consumes the file exactly.
+    corners = bc = nothing
+    for wd in (8, 4)
+        ok, c, b = _re2_parse(bytes, nelgt, ndim, wd, swap)
+        if ok
+            corners, bc = c, b
+            verbose && println("  .re2: $(nelgt) hex elements, " *
+                               "$(wd)-byte reals, $(swap ? "byte-swapped" : "native") endian")
+            break
+        end
+    end
+    corners === nothing &&
+        error("Could not parse .re2 layout (word-size/field-count mismatch). " *
+              "Please share the file — its byte layout may differ from the " *
+              "assumed Nek5000 format.")
+
+    return _re2_build_mesh(corners, bc, reverse_normals, verbose)
+end; export load_re2
+
+# Deduplicate hex corners into a global node list; returns the (3, N) coords
+# matrix and an (8, nelgt) array of global node indices per element.
+function _re2_dedup_nodes(corners::Array{Float64,3})
+    nvert, nelgt = size(corners, 2), size(corners, 3)
+    extent = maximum(abs, corners; init = 0.0)
+    tol    = max(extent * 1e-8, 1e-12)
+    keyof(x) = (round(Int, x[1]/tol), round(Int, x[2]/tol), round(Int, x[3]/tol))
+
+    index = Dict{NTuple{3,Int}, Int}()
+    coords_cols = Vector{NTuple{3,Float64}}()
+    elem_nodes  = Array{Int,2}(undef, nvert, nelgt)
+    for e in 1:nelgt, v in 1:nvert
+        x = (corners[1,v,e], corners[2,v,e], corners[3,v,e])
+        k = keyof(x)
+        elem_nodes[v, e] = get!(index, k) do
+            push!(coords_cols, x)
+            length(coords_cols)
+        end
+    end
+
+    coords = Matrix{Float64}(undef, 3, length(coords_cols))
+    for (j, c) in enumerate(coords_cols)
+        coords[1,j] = c[1]; coords[2,j] = c[2]; coords[3,j] = c[3]
+    end
+    return coords, elem_nodes
+end
+
+# Orient the four face node indices so the Quad4 normal points *into* the fluid
+# domain — i.e. toward the owner hex's centroid. The hex volume is the radiating
+# cavity, so boundary walls must face inward to exchange radiation across it.
+# (Use `reverse_normals=true` for the opposite convention.)
+function _re2_orient_inward(coords::Matrix{Float64}, face::NTuple{4,Int},
+                            elem_centroid::SVector{3,Float64})
+    p(i) = SVector{3,Float64}(coords[1,i], coords[2,i], coords[3,i])
+    v1, v2, v3, v4 = p(face[1]), p(face[2]), p(face[3]), p(face[4])
+    nrm = cross(v2 - v1, v4 - v1)
+    fc  = (v1 + v2 + v3 + v4) / 4
+    return dot(nrm, fc - elem_centroid) > 0 ?          # points outward → flip
+           (face[1], face[4], face[3], face[2]) : face
+end
+
+function _re2_build_mesh(corners::Array{Float64,3},
+                         bc::Vector{Tuple{Int,Int,String}},
+                         reverse_normals::Bool, verbose::Bool)::MeshData
+    nelgt = size(corners, 3)
+    coords, elem_nodes = _re2_dedup_nodes(corners)
+
+    # element centroids (for outward orientation)
+    centroid(e) = SVector{3,Float64}(
+        sum(@view corners[1, :, e]) / 8,
+        sum(@view corners[2, :, e]) / 8,
+        sum(@view corners[3, :, e]) / 8)
+
+    # Radiating boundary faces come from non-internal BC records, grouped by code.
+    radiating = filter(r -> !(r[3] in _RE2_INTERNAL_BC), bc)
+
+    surface_elems = SurfaceElement[]
+    group_tags    = Dict{Int,String}()
+    group_elems   = Dict{Int,Vector{Int}}()
+    code_to_tag   = Dict{String,Int}()
+
+    function tag_for(code::String)
+        get!(code_to_tag, code) do
+            t = length(code_to_tag) + 1
+            group_tags[t]  = code
+            group_elems[t] = Int[]
+            t
+        end
+    end
+
+    if !isempty(radiating)
+        for (eg, iside, code) in radiating
+            (1 <= eg <= nelgt && 1 <= iside <= 6) || continue
+            fnodes = ntuple(k -> elem_nodes[_RE2_HEX_FACE[iside][k], eg], 4)
+            fnodes = _re2_orient_inward(coords, fnodes, centroid(eg))
+            gtag   = tag_for(code)
+            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4))
+            push!(group_elems[gtag], length(surface_elems))
+        end
+        verbose && println("  .re2: $(length(surface_elems)) boundary faces in " *
+                           "$(length(group_tags)) BC group(s): " *
+                           join(sort(collect(values(group_tags))), ", "))
+    else
+        # No usable BC labels — fall back to topological boundary extraction:
+        # faces referenced by exactly one element are on the boundary.
+        verbose && @info ".re2: no boundary-condition labels found; extracting " *
+                         "the topological boundary as a single \"default\" group."
+        face_count = Dict{NTuple{4,Int}, Tuple{Int,Int}}()  # sorted key → (eg,iside)
+        seen       = Dict{NTuple{4,Int}, Int}()
+        for e in 1:nelgt, f in 1:6
+            fn  = ntuple(k -> elem_nodes[_RE2_HEX_FACE[f][k], e], 4)
+            key = Tuple(sort(collect(fn)))
+            seen[key] = get(seen, key, 0) + 1
+            haskey(face_count, key) || (face_count[key] = (e, f))
+        end
+        gtag = tag_for("default")
+        for (key, cnt) in seen
+            cnt == 1 || continue
+            e, f   = face_count[key]
+            fnodes = ntuple(k -> elem_nodes[_RE2_HEX_FACE[f][k], e], 4)
+            fnodes = _re2_orient_inward(coords, fnodes, centroid(e))
+            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4))
+            push!(group_elems[gtag], length(surface_elems))
+        end
+        verbose && println("  .re2: $(length(surface_elems)) topological " *
+                           "boundary faces.")
+    end
+
+    isempty(surface_elems) &&
+        error("No radiating boundary faces found in .re2 mesh.")
+
+    if reverse_normals
+        _reverse_all_normals!(surface_elems, 2)
+        verbose && println("  All normals reversed.")
+    end
+
+    group_tri_soup = _build_group_obs_soups(coords, surface_elems, group_elems, 2)
+    return MeshData(coords, surface_elems, group_tags, group_elems,
+                    group_tri_soup, 2)
 end
 
 end # module MeshIO
