@@ -171,7 +171,9 @@ end
 
     Ai = zero(T); Aj = zero(T); K_sum = zero(T)
 
-    s = floor(Int, sqrt(T(n_samples)))
+    # unsafe_trunc avoids the checked Float→Int conversion (which boxes/heap
+    # -allocates on GPUs); sqrt(n_samples) ≥ 0 so trunc == floor here.
+    s = Int(unsafe_trunc(Int32, sqrt(T(n_samples))))
 
     # ---- Stratified samples ----
     sample_k = 0
