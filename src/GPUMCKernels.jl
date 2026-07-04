@@ -299,19 +299,18 @@ function launch_mc_kernel!(ga, backend;
                              flat_bvh           = nothing)
     N      = ga.N
     FloatT = ga.FloatT
-    ArrayT = typeof(ga.coords)
 
-    raw_out  = ArrayT(zeros(FloatT, N, N))
-    area_out = ArrayT(zeros(FloatT, N))
+    raw_out  = KernelAbstractions.zeros(backend, FloatT, N, N)
+    area_out = KernelAbstractions.zeros(backend, FloatT, N)
 
     use_bvh = flat_bvh !== nothing
-    dummy   = ArrayT(zeros(FloatT, 1, 1))   # placeholder when no BVH
+    dummy   = KernelAbstractions.zeros(backend, FloatT, 1, 1)   # placeholder when no BVH
     bvh_lo      = use_bvh ? flat_bvh.nodes_lo   : dummy
     bvh_hi      = use_bvh ? flat_bvh.nodes_hi   : dummy
-    bvh_meta    = use_bvh ? flat_bvh.nodes_meta  : ArrayT(zeros(Int32,1,1))
-    bvh_tri_idx = use_bvh ? flat_bvh.tri_idx     : ArrayT(zeros(Int32,1))
+    bvh_meta    = use_bvh ? flat_bvh.nodes_meta  : KernelAbstractions.zeros(backend, Int32, 1, 1)
+    bvh_tri_idx = use_bvh ? flat_bvh.tri_idx     : KernelAbstractions.zeros(backend, Int32, 1)
     bvh_tris    = use_bvh ? flat_bvh.tri_verts   : dummy
-    bvh_tri_grp = use_bvh ? flat_bvh.tri_group   : ArrayT(zeros(Int32,1))
+    bvh_tri_grp = use_bvh ? flat_bvh.tri_group   : KernelAbstractions.zeros(backend, Int32, 1)
 
     kern! = _mc_pair_kernel!(backend, (groupsize, groupsize))
     kern!(raw_out, area_out,
