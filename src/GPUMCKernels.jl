@@ -98,7 +98,7 @@ end
     return x, c/dA, dA
 end
 
-@inline function _quad4_eval(coords, nodes_quad4, ni_idx::Int, ξ::T, η::T) where T
+@inline function _quad4_eval(coords, nodes_quad, ni_idx::Int, ξ::T, η::T) where T
     N    = SVector{4,T}(T(0.25)*(1-ξ)*(1-η), T(0.25)*(1+ξ)*(1-η),
                         T(0.25)*(1+ξ)*(1+η), T(0.25)*(1-ξ)*(1+η))
     dNdξ = SVector{4,T}(-T(0.25)*(1-η),  T(0.25)*(1-η),
@@ -107,7 +107,7 @@ end
                          T(0.25)*(1+ξ),  T(0.25)*(1-ξ))
     x=@SVector zeros(T,3); dxdξ=@SVector zeros(T,3); dxdη=@SVector zeros(T,3)
     for a in 1:4
-        na=nodes_quad4[a, ni_idx]
+        na=nodes_quad[a, ni_idx]
         xa=SVector{3,T}(coords[1,na],coords[2,na],coords[3,na])
         x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
     end
@@ -115,13 +115,13 @@ end
     return x, c/dA, dA
 end
 
-@inline function _tri3_eval(coords, nodes_tri3, ni_idx::Int, ξ::T, η::T) where T
+@inline function _tri3_eval(coords, nodes_tri, ni_idx::Int, ξ::T, η::T) where T
     N    = SVector{3,T}(1-ξ-η, ξ, η)
     dNdξ = SVector{3,T}(-one(T), one(T), zero(T))
     dNdη = SVector{3,T}(-one(T), zero(T), one(T))
     x=@SVector zeros(T,3); dxdξ=@SVector zeros(T,3); dxdη=@SVector zeros(T,3)
     for a in 1:3
-        na=nodes_tri3[a, ni_idx]
+        na=nodes_tri[a, ni_idx]
         xa=SVector{3,T}(coords[1,na],coords[2,na],coords[3,na])
         x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
     end
@@ -146,7 +146,6 @@ end
 @kernel function _mc_pair_kernel!(raw_out, area_out,
                                    coords,
                                    nodes_quad, nodes_tri,
-                                   nodes_quad4, nodes_tri3,
                                    elem_family, elem_node_idx,
                                    n_samples::Int,
                                    global_seed::UInt64,
@@ -181,7 +180,6 @@ end
             u1, rng_state = _xorshift64(rng_state)
             u2, rng_state = _xorshift64(rng_state)
             xi, nni, dAi = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                               nodes_quad4, nodes_tri3,
                                                fi, ni_idx,
                                                T((si + u1)/s), T((sj + u2)/s))
             Ai += dAi
@@ -190,7 +188,6 @@ end
             u3, rng_state = _xorshift64(rng_state)
             u4, rng_state = _xorshift64(rng_state)
             xj, nnj, dAj = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                               nodes_quad4, nodes_tri3,
                                                fj, nj_idx,
                                                T((si + u3)/s), T((sj + u4)/s))
             Aj += dAj
@@ -220,12 +217,10 @@ end
         u1, rng_state = _xorshift64(rng_state)
         u2, rng_state = _xorshift64(rng_state)
         xi, nni, dAi  = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                            nodes_quad4, nodes_tri3,
                                             fi, ni_idx, T(u1), T(u2))
         u3, rng_state = _xorshift64(rng_state)
         u4, rng_state = _xorshift64(rng_state)
         xj, nnj, dAj  = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                            nodes_quad4, nodes_tri3,
                                             fj, nj_idx, T(u3), T(u4))
         Ai += dAi; Aj += dAj
         K = _vf_kernel_gpu(xi, nni, xj, nnj)
@@ -263,20 +258,21 @@ end
 
 # Map a (u1,u2) uniform pair in [0,1]² to a point on element family fi.
 # Family codes: 0=Quad8, 1=Tri6, 2=Quad4, 3=Tri3.
+# Quad4 elements share the `nodes_quad` matrix (first 4 of 8 rows) and Tri3
+# elements share `nodes_tri` (first 3 of 6 rows), matching build_gpu_arrays.
 @inline function _sample_on_element(coords, nodes_quad, nodes_tri,
-                                     nodes_quad4, nodes_tri3,
                                      fi::Int, ni_idx::Int,
                                      u1::T, u2::T) where T
     if fi == 0 || fi == 2   # quad: map [0,1]² → [-1,1]²
         ξ = T(2)*u1 - T(1)
         η = T(2)*u2 - T(1)
-        return fi == 0 ? _quad8_eval(coords, nodes_quad,  ni_idx, ξ, η) :
-                         _quad4_eval(coords, nodes_quad4, ni_idx, ξ, η)
+        return fi == 0 ? _quad8_eval(coords, nodes_quad, ni_idx, ξ, η) :
+                         _quad4_eval(coords, nodes_quad, ni_idx, ξ, η)
     else                    # tri: fold [0,1]² into reference triangle
         ξ = u1; η = u2
         if ξ + η > T(1); ξ = T(1)-ξ; η = T(1)-η; end
-        return fi == 1 ? _tri6_eval(coords, nodes_tri,  ni_idx, ξ, η) :
-                         _tri3_eval(coords, nodes_tri3, ni_idx, ξ, η)
+        return fi == 1 ? _tri6_eval(coords, nodes_tri, ni_idx, ξ, η) :
+                         _tri3_eval(coords, nodes_tri, ni_idx, ξ, η)
     end
 end
 
@@ -315,7 +311,6 @@ function launch_mc_kernel!(ga, backend;
     kern! = _mc_pair_kernel!(backend, (groupsize, groupsize))
     kern!(raw_out, area_out,
           ga.coords, ga.nodes_quad, ga.nodes_tri,
-          ga.nodes_quad4, ga.nodes_tri3,
           ga.elem_family, ga.elem_node_idx,
           n_samples, seed, use_bvh,
           bvh_lo, bvh_hi, bvh_meta, bvh_tri_idx, bvh_tris, bvh_tri_grp,
