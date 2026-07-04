@@ -34,11 +34,14 @@ export build_gpu_mc_arrays, launch_mc_kernel!
 # Inline xorshift64 PRNG (no allocation, safe inside @kernel)
 # ---------------------------------------------------------------------------
 
-@inline function _xorshift64(state::UInt64)::Tuple{Float64, UInt64}
+# Returns a uniform value in [0,1) as type `T` (Float32 on Metal, Float64
+# elsewhere) so the kernel never introduces an unsupported Float64 on GPUs
+# that lack double precision.
+@inline function _xorshift64(state::UInt64, ::Type{T}) where T
     state ^= state << 13
     state ^= state >> 7
     state ^= state << 17
-    return (Float64(state >> 11) / Float64(0x001FFFFFFFFFFFFF), state)
+    return (T(state >> 11) / T(0x001FFFFFFFFFFFFF), state)
 end
 
 @inline function _init_rng(global_seed::UInt64, thread_id::Int)::UInt64
@@ -168,7 +171,7 @@ end
 
     Ai = zero(T); Aj = zero(T); K_sum = zero(T)
 
-    s = floor(Int, sqrt(n_samples))
+    s = floor(Int, sqrt(T(n_samples)))
 
     # ---- Stratified samples ----
     sample_k = 0
@@ -177,16 +180,16 @@ end
             sample_k += 1
 
             # Sample on element i
-            u1, rng_state = _xorshift64(rng_state)
-            u2, rng_state = _xorshift64(rng_state)
+            u1, rng_state = _xorshift64(rng_state, T)
+            u2, rng_state = _xorshift64(rng_state, T)
             xi, nni, dAi = _sample_on_element(coords, nodes_quad, nodes_tri,
                                                fi, ni_idx,
                                                T((si + u1)/s), T((sj + u2)/s))
             Ai += dAi
 
             # Sample on element j
-            u3, rng_state = _xorshift64(rng_state)
-            u4, rng_state = _xorshift64(rng_state)
+            u3, rng_state = _xorshift64(rng_state, T)
+            u4, rng_state = _xorshift64(rng_state, T)
             xj, nnj, dAj = _sample_on_element(coords, nodes_quad, nodes_tri,
                                                fj, nj_idx,
                                                T((si + u3)/s), T((sj + u4)/s))
@@ -214,12 +217,12 @@ end
 
     # Remaining samples from full reference domain
     for _ in sample_k+1:n_samples
-        u1, rng_state = _xorshift64(rng_state)
-        u2, rng_state = _xorshift64(rng_state)
+        u1, rng_state = _xorshift64(rng_state, T)
+        u2, rng_state = _xorshift64(rng_state, T)
         xi, nni, dAi  = _sample_on_element(coords, nodes_quad, nodes_tri,
                                             fi, ni_idx, T(u1), T(u2))
-        u3, rng_state = _xorshift64(rng_state)
-        u4, rng_state = _xorshift64(rng_state)
+        u3, rng_state = _xorshift64(rng_state, T)
+        u4, rng_state = _xorshift64(rng_state, T)
         xj, nnj, dAj  = _sample_on_element(coords, nodes_quad, nodes_tri,
                                             fj, nj_idx, T(u3), T(u4))
         Ai += dAi; Aj += dAj
