@@ -43,7 +43,7 @@ import ..BVH:         BVHTree
 import ..RayCast:     is_visible
 import ..MeshIO:      SurfaceElement
 
-export element_pair_view_factor_mc
+export element_pair_view_factor_mc, ElementSamples, sample_element_mc
 
 # ---------------------------------------------------------------------------
 # Random point generation on reference elements
@@ -191,6 +191,39 @@ function _sample_element(coords::Matrix{Float64},
     return xs, ns, dAs, A
 end
 
+"""
+    ElementSamples
+
+Pre-drawn Monte Carlo samples for one element: physical positions `xs`, unit
+normals `ns`, raw Jacobians `dAs`, MC area estimate `A`, the reference-domain
+area `ref_area`, and sample count `n`.
+
+Drawing these once per element (O(N)) and reusing them across all element pairs
+avoids the O(N²) re-sampling a naive pairwise loop incurs. Each per-pair
+estimate stays unbiased: `xs` is uniform on the element and is paired with the
+other element's independent samples by stratum index, exactly as in the
+on-the-fly path.
+"""
+struct ElementSamples
+    xs       :: Vector{SVector{3,Float64}}
+    ns       :: Vector{SVector{3,Float64}}
+    dAs      :: Vector{Float64}
+    A        :: Float64
+    ref_area :: Float64
+    n        :: Int
+end
+
+"""
+    sample_element_mc(coords, elem, n, rng) -> ElementSamples
+
+Draw and cache `n` stratified samples on `elem` for reuse across pairs.
+"""
+function sample_element_mc(coords::Matrix{Float64}, elem::SurfaceElement,
+                            n::Int, rng::AbstractRNG)::ElementSamples
+    xs, ns, dAs, A = _sample_element(coords, elem, n, rng)
+    return ElementSamples(xs, ns, dAs, A, _ref_area(elem), n)
+end
+
 # Inline Tri6 point/normal/dA (avoids circular import with ViewFactorKernel)
 @inline function _tri6_point_normal_dA(coords, nodes, ξ::Float64, η::Float64)
     L1=1-ξ-η; L2=ξ; L3=η
@@ -232,14 +265,30 @@ function element_pair_view_factor_mc(coords   ::Matrix{Float64},
                                       mesh_dim ::Int,
                                       rng      ::AbstractRNG)::Tuple{Float64,Float64}
 
+    si = sample_element_mc(coords, elem_i, n_samples, rng)
+    sj = sample_element_mc(coords, elem_j, n_samples, rng)
+    return element_pair_view_factor_mc(si, sj, bvh, mesh_dim)
+end
+
+"""
+    element_pair_view_factor_mc(si::ElementSamples, sj::ElementSamples, bvh, mesh_dim) -> (raw, Ai)
+
+Fast path used by the assembly loop: estimate the raw double integral from
+pre-drawn samples ([`sample_element_mc`](@ref)). `si` and `sj` must hold the
+same number of samples.
+"""
+function element_pair_view_factor_mc(si      ::ElementSamples,
+                                      sj      ::ElementSamples,
+                                      bvh     ::Union{BVHTree,Nothing},
+                                      mesh_dim::Int)::Tuple{Float64,Float64}
     do_vis = bvh !== nothing
     is_2d  = mesh_dim == 1
-
-    xs_i, ns_i, dAs_i, Ai = _sample_element(coords, elem_i, n_samples, rng)
-    xs_j, ns_j, dAs_j, Aj = _sample_element(coords, elem_j, n_samples, rng)
+    n      = si.n
+    xs_i, ns_i, dAs_i = si.xs, si.ns, si.dAs
+    xs_j, ns_j, dAs_j = sj.xs, sj.ns, sj.dAs
 
     K_sum = 0.0
-    for k in 1:n_samples
+    @inbounds for k in 1:n
         xi = xs_i[k]; ni = ns_i[k]; dAi = dAs_i[k]
         xj = xs_j[k]; nj = ns_j[k]; dAj = dAs_j[k]
 
@@ -253,20 +302,11 @@ function element_pair_view_factor_mc(coords   ::Matrix{Float64},
         K_sum += K * dAi * dAj
     end
 
-    # MC estimate: (Ai * Aj / n) * (1/(Ai*Aj)) * Σ K*dAi*dAj
-    # = (1/n) * Σ K*dAi*dAj   ... but we need to normalise by the
-    # reference domain areas already absorbed into dAi,dAj via the
-    # stratified weights.  The stratified sampler already divides by n
-    # in the weight wt = ref_area/n, so:
-    #   _sample_element returns dAs without the 1/n factor (raw Jacobian)
-    #   Ai = wt * Σ dAs_i  =  (ref_area/n) * Σ dAs_i
-    # The MC estimator for ∬K dAi dAj is:
-    #   (ref_area_i / n) * (ref_area_j / n) * Σ K * dAi * dAj
-    # But since Ai = (ref_area_i/n)*Σ dAs_i and similarly for Aj,
-    # we absorb the normalisation directly:
-    raw = K_sum * _ref_area(elem_i) * _ref_area(elem_j) / n_samples
-
-    return raw, Ai
+    # MC estimator for ∬K dAi dAj.  The stratified sampler returns raw
+    # Jacobians dAs (no 1/n factor), with Ai = (ref_area_i/n)*Σ dAs_i, so
+    # the reference-domain areas and the 1/n normalisation are folded in here:
+    raw = K_sum * si.ref_area * sj.ref_area / n
+    return raw, si.A
 end
 
 @inline _ref_area(el::SurfaceElement) =

@@ -9,8 +9,9 @@ using Random
 import ..MeshIO:           MeshData, SurfaceElement
 import ..Quadrature:       gauss_legendre_2d
 import ..BVH:              BVHTree, build_bvh
-import ..ViewFactorKernel: element_pair_view_factor
-import ..MCKernel:         element_pair_view_factor_mc
+import ..ViewFactorKernel: element_pair_view_factor, precompute_quad, ElementQuad
+import ..MCKernel:         element_pair_view_factor_mc, sample_element_mc,
+                           ElementSamples
 import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type
 import ..Results:          ViewFactorResult, _aggregate, aggregate_by_group,
                            check_reciprocity, check_closure
@@ -164,34 +165,42 @@ function _compute_cpu(mesh              ::MeshData,
         # Using threadid() as an index is unreliable; per-row RNGs are safe regardless
         # of how many threads or tasks Julia uses internally.
         row_rngs = [Random.seed!(copy(rng), rand(rng, UInt64)) for _ in 1:N]
-        for i in 1:N
-            _, Ai = element_pair_view_factor_mc(coords, elems[i], elems[i],
-                                                 n_samples, nothing, mesh_dim,
-                                                 row_rngs[i])
-            A_elem[i] = Ai
+        # Draw one independent sample set per element once (O(N)) and reuse it
+        # across all pairs, instead of re-sampling both elements for every pair.
+        samples = Vector{ElementSamples}(undef, N)
+        Threads.@threads for i in 1:N
+            samples[i] = sample_element_mc(coords, elems[i], n_samples, row_rngs[i])
+            A_elem[i]  = samples[i].A
         end
         Threads.@threads for i in 1:N
             gi      = elems[i].group
+            si      = samples[i]
             j_start = self_vf ? i : i + 1
             for j in j_start:N
                 gj    = elems[j].group
                 bvh   = get_bvh(gi, gj)
-                integ, _ = element_pair_view_factor_mc(coords, elems[i], elems[j],
-                                                        n_samples, bvh, mesh_dim,
-                                                        row_rngs[i])
+                # Diagonal self-pair needs an independent second sample set,
+                # otherwise xᵢ == xⱼ at every k gives r=0 and a spurious zero.
+                sj = j == i ?
+                     sample_element_mc(coords, elems[i], n_samples, row_rngs[i]) :
+                     samples[j]
+                integ, _ = element_pair_view_factor_mc(si, sj, bvh, mesh_dim)
                 raw_integral[i, j] = integ
                 raw_integral[j, i] = integ
             end
             verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
         end
     else
-        for i in 1:N
-            _, Ai     = element_pair_view_factor(coords, elems[i], elems[i],
-                                                  nquad, nothing, mesh_dim)
-            A_elem[i] = Ai
+        # Pre-evaluate each element's quadrature points once (O(N)) instead of
+        # re-deriving them for every pair inside the O(N²) loop below.
+        quads = Vector{ElementQuad}(undef, N)
+        Threads.@threads for i in 1:N
+            quads[i]  = precompute_quad(coords, elems[i], nquad, mesh_dim)
+            A_elem[i] = quads[i].Li
         end
         Threads.@threads for i in 1:N
             gi      = elems[i].group
+            qi      = quads[i]
             j_start = self_vf ? i : i + 1
             for j in j_start:N
                 gj  = elems[j].group
@@ -200,8 +209,7 @@ function _compute_cpu(mesh              ::MeshData,
                     element_pair_view_factor_duffy(coords, elems[i], elems[j],
                                                     nquad, bvh, mesh_dim)
                 else
-                    element_pair_view_factor(coords, elems[i], elems[j],
-                                             nquad, bvh, mesh_dim)
+                    element_pair_view_factor(qi, quads[j], bvh, mesh_dim)
                 end
                 raw_integral[i, j] = integ
                 raw_integral[j, i] = integ

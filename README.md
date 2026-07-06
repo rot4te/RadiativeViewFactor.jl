@@ -18,6 +18,11 @@ any format readable by [Gmsh](https://gmsh.info/) is supported, plus XML VTK
   Nastran `.bdf`/`.nas`, `.med`, legacy `.vtk`, etc. XML VTK unstructured grids
   (`.vtu`, XML-form `.vtk`) are auto-detected and read through ReadVTK.jl when
   `using ReadVTK` is in scope.
+- **Nek5000/NekRS `.re2` binary meshes**: 3D hex volume meshes are read by a
+  dedicated in-tree parser (Gmsh cannot open them). Boundary faces become
+  radiating Quad4 surfaces, grouped by their Nek boundary-condition label, with
+  normals oriented into the fluid cavity. Word size (4- or 8-byte reals) and
+  byte order are auto-detected.
 - **1st- and 2nd-order elements**, in any mix within one mesh:
   - **3D surface meshes** (`surface_dim=2`): Tri3, Quad4 (1st order); Tri6, Quad8,
     Quad9 (centre node dropped) (2nd order)
@@ -63,6 +68,11 @@ RadiativeViewFactor.jl/
 │   ├── RadiativeViewFactorMetalExt.jl    # Registers MetalBackend → MtlArray, Float32
 │   ├── RadiativeViewFactorPlotsExt.jl    # plot_mesh_normals (Plots.jl)
 │   └── RadiativeViewFactorReadVTKExt.jl  # XML VTK (.vtu) loading via ReadVTK.jl
+├── benchmarks/
+│   ├── common.jl                # Shared mesh generators and timing helpers
+│   ├── quadrature_bench.jl      # Deterministic assembly benchmark (sweeps N)
+│   ├── montecarlo_bench.jl      # Monte Carlo assembly benchmark (sweeps n_samples)
+│   └── RESULTS.md               # Before/after numbers for the pre-evaluation optimization
 ├── test/
 │   └── runtests.jl
 └── Project.toml
@@ -135,6 +145,12 @@ mesh = load_mesh("assembly.step")
 using ReadVTK
 mesh = load_mesh("grid.vtu")                       # auto-detected
 mesh = load_vtu("grid.vtu"; group_field="RegionId") # per-cell region → groups
+
+# Nek5000/NekRS .re2 (3D hex) → boundary faces grouped by BC label:
+mesh = load_mesh("cavity.re2")     # auto-detected; no extra dependency
+mesh = load_re2("cavity.re2")      # or call the loader directly
+# Groups are the Nek boundary-condition labels (e.g. "W", "v", "O"); normals
+# point into the fluid cavity. Use reverse_normals=true for the opposite sense.
 ```
 
 ### Obstruction detection
@@ -268,6 +284,19 @@ Physical Curve("obstruction") = {3};
 ```
 
 ## Performance Notes
+
+### Assembly cost and quadrature reuse
+
+Assembly is O(N²) in the element count. Each element's quadrature points and
+geometric quantities (deterministic path) or Monte Carlo samples (MC path) are
+**pre-evaluated once per element** and reused across every pair, rather than
+re-derived inside the pair loop. This keeps per-pair work to the kernel
+evaluation itself and avoids O(N²) shape-function and quadrature-rule
+reconstruction. On an 8-core CPU this is ~2.6–3.1× faster for the deterministic
+path and ~12–15× faster for Monte Carlo, with 60–450× fewer allocations,
+versus re-evaluating per pair — see [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)
+and the reproducible scripts in [`benchmarks/`](benchmarks/). Results are
+numerically identical (the change is evaluation order only).
 
 ### Integration method selection
 
