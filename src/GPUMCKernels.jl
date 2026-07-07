@@ -8,9 +8,12 @@
 # Random number generation on GPU
 # --------------------------------
 # KernelAbstractions kernels cannot use Julia's AbstractRNG directly (it
-# requires heap allocation).  Instead we use a minimal inline xorshift64
-# PRNG seeded per-thread from the global seed and thread index.  This gives
-# independent pseudo-random streams per thread with no memory overhead.
+# requires heap allocation).  Each thread is seeded once with splitmix64 from
+# the global seed and thread index, then the hot sampling loop draws from a
+# fast inline 32-bit xorshift PRNG.  The 32-bit hot path is deliberate: GPUs
+# such as Apple Silicon emulate 64-bit integer math in software, so a 64-bit
+# per-sample RNG dominates the kernel runtime.  This gives independent
+# pseudo-random streams per thread with no memory overhead.
 #
 # Stratified sampling
 # -------------------
@@ -34,16 +37,23 @@ export build_gpu_mc_arrays, launch_mc_kernel!
 # Inline xorshift64 PRNG (no allocation, safe inside @kernel)
 # ---------------------------------------------------------------------------
 
-@inline function _xorshift64(state::UInt64)::Tuple{Float64, UInt64}
-    state ^= state << 13
-    state ^= state >> 7
-    state ^= state << 17
-    return (Float64(state >> 11) / Float64(0x001FFFFFFFFFFFFF), state)
+# Per-sample PRNG for the hot loop.  Uses 32-bit xorshift so it runs natively
+# on GPUs (e.g. Apple Silicon) that emulate 64-bit integer math in software —
+# a 64-bit RNG here dominates the kernel runtime.  Returns a uniform value in
+# [0,1) as type `T` (Float32 on Metal, Float64 elsewhere); `state` must stay
+# nonzero.  Period 2^32-1 is ample: each thread draws ≪ 2^32 values.
+@inline function _xorshift32(state::UInt32, ::Type{T}) where T
+    state ⊻= state << 13
+    state ⊻= state >> 17
+    state ⊻= state << 5
+    # top 24 bits → exact Float32 mantissa; harmless extra precision for Float64
+    return (T(state >> 8) / T(0x01000000), state)
 end
 
-@inline function _init_rng(global_seed::UInt64, thread_id::Int)::UInt64
-    # Mix thread id into seed using splitmix64 to ensure different streams
-    z = global_seed + UInt64(thread_id) * 0x9E3779B97F4A7C15
+@inline function _init_rng(global_seed::UInt64, thread_id::Int32)::UInt64
+    # Mix thread id into seed using splitmix64 to ensure different streams.
+    # 64-bit splitmix runs once per thread, so its cost is negligible.
+    z = global_seed + UInt64(thread_id % UInt32) * 0x9E3779B97F4A7C15
     z = (z ⊻ (z >> 30)) * 0xBF58476D1CE4E5B9
     z = (z ⊻ (z >> 27)) * 0x94D049BB133111EB
     return z ⊻ (z >> 31)
@@ -71,7 +81,7 @@ end
             SVector{8,T}(dN1dη,dN2dη,dN3dη,dN4dη,dN5dη,dN6dη,dN7dη,dN8dη))
 end
 
-@inline function _quad8_eval(coords, nodes_quad, ni_idx::Int, ξ::T, η::T) where T
+@inline function _quad8_eval(coords, nodes_quad, ni_idx::Int32, ξ::T, η::T) where T
     N, dNdξ, dNdη = _quad8_shape_gpu(ξ, η)
     x=@SVector zeros(T,3); dxdξ=@SVector zeros(T,3); dxdη=@SVector zeros(T,3)
     for a in 1:8
@@ -83,7 +93,7 @@ end
     return x, c/dA, dA
 end
 
-@inline function _tri6_eval(coords, nodes_tri, ni_idx::Int, ξ::T, η::T) where T
+@inline function _tri6_eval(coords, nodes_tri, ni_idx::Int32, ξ::T, η::T) where T
     L1=1-ξ-η; L2=ξ; L3=η
     N=SVector{6,T}(L1*(2L1-1),L2*(2L2-1),L3*(2L3-1),4L1*L2,4L2*L3,4L1*L3)
     dNdξ=SVector{6,T}((4L1-1)*T(-1),4L2-1,T(0),4*(L2*T(-1)+L1),4L3,4L3*T(-1))
@@ -98,7 +108,7 @@ end
     return x, c/dA, dA
 end
 
-@inline function _quad4_eval(coords, nodes_quad4, ni_idx::Int, ξ::T, η::T) where T
+@inline function _quad4_eval(coords, nodes_quad, ni_idx::Int32, ξ::T, η::T) where T
     N    = SVector{4,T}(T(0.25)*(1-ξ)*(1-η), T(0.25)*(1+ξ)*(1-η),
                         T(0.25)*(1+ξ)*(1+η), T(0.25)*(1-ξ)*(1+η))
     dNdξ = SVector{4,T}(-T(0.25)*(1-η),  T(0.25)*(1-η),
@@ -107,7 +117,7 @@ end
                          T(0.25)*(1+ξ),  T(0.25)*(1-ξ))
     x=@SVector zeros(T,3); dxdξ=@SVector zeros(T,3); dxdη=@SVector zeros(T,3)
     for a in 1:4
-        na=nodes_quad4[a, ni_idx]
+        na=nodes_quad[a, ni_idx]
         xa=SVector{3,T}(coords[1,na],coords[2,na],coords[3,na])
         x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
     end
@@ -115,13 +125,13 @@ end
     return x, c/dA, dA
 end
 
-@inline function _tri3_eval(coords, nodes_tri3, ni_idx::Int, ξ::T, η::T) where T
+@inline function _tri3_eval(coords, nodes_tri, ni_idx::Int32, ξ::T, η::T) where T
     N    = SVector{3,T}(1-ξ-η, ξ, η)
     dNdξ = SVector{3,T}(-one(T), one(T), zero(T))
     dNdη = SVector{3,T}(-one(T), zero(T), one(T))
     x=@SVector zeros(T,3); dxdξ=@SVector zeros(T,3); dxdη=@SVector zeros(T,3)
     for a in 1:3
-        na=nodes_tri3[a, ni_idx]
+        na=nodes_tri[a, ni_idx]
         xa=SVector{3,T}(coords[1,na],coords[2,na],coords[3,na])
         x=x+N[a]*xa; dxdξ=dxdξ+dNdξ[a]*xa; dxdη=dxdη+dNdη[a]*xa
     end
@@ -146,7 +156,6 @@ end
 @kernel function _mc_pair_kernel!(raw_out, area_out,
                                    coords,
                                    nodes_quad, nodes_tri,
-                                   nodes_quad4, nodes_tri3,
                                    elem_family, elem_node_idx,
                                    n_samples::Int,
                                    global_seed::UInt64,
@@ -154,43 +163,56 @@ end
                                    bvh_lo, bvh_hi, bvh_meta,
                                    bvh_tri_idx, bvh_tris, bvh_tri_group,
                                    N::Int)
-    i, j = @index(Global, NTuple)
+    ig, jg = @index(Global, NTuple)
+    # Work in 32-bit index space: Apple GPUs emulate 64-bit integer math, so
+    # keeping our own index arithmetic in Int32 avoids that tax.  (Array-stride
+    # multiplies inside A[i,j] remain 64-bit — that's internal to the device
+    # array type.)
+    i   = ig % Int32
+    j   = jg % Int32
+    N32 = N   % Int32
 
-    if i <= N && j <= N && i < j
+    if i <= N32 && j <= N32 && i < j
 
     T        = eltype(coords)
     fi       = Int(elem_family[i]);  fj = Int(elem_family[j])
-    ni_idx   = Int(elem_node_idx[i]); nj_idx = Int(elem_node_idx[j])
+    ni_idx   = elem_node_idx[i] % Int32; nj_idx = elem_node_idx[j] % Int32
     gi       = Int32(0);  gj = Int32(0)   # group tags not needed: BVH exclusion
     # handled via bvh_tri_group in gpu_intersect_bvh
 
-    thread_id = (i-1)*N + j
-    rng_state = _init_rng(global_seed, thread_id)
+    # Unique per-thread id for RNG seeding (fits Int32 for N ≤ 46340).
+    thread_id = (i - one(Int32)) * N32 + j
+    # splitmix64 seeding (once per thread), then fold to a nonzero UInt32 that
+    # drives the fast 32-bit hot-loop PRNG.
+    seed64    = _init_rng(global_seed, thread_id)
+    rng_state = UInt32((seed64 ⊻ (seed64 >> 32)) & 0xFFFFFFFF)
+    rng_state = ifelse(rng_state == UInt32(0), UInt32(0x9E3779B9), rng_state)
 
     Ai = zero(T); Aj = zero(T); K_sum = zero(T)
 
-    s = floor(Int, sqrt(n_samples))
+    # unsafe_trunc avoids the checked Float→Int conversion (which boxes/heap
+    # -allocates on GPUs); sqrt(n_samples) ≥ 0 so trunc == floor here.
+    ns32 = n_samples % Int32
+    s    = unsafe_trunc(Int32, sqrt(T(n_samples)))
 
     # ---- Stratified samples ----
-    sample_k = 0
-    for si in 0:s-1
-        for sj in 0:s-1
-            sample_k += 1
+    sample_k = Int32(0)
+    for si in Int32(0):s-one(Int32)
+        for sj in Int32(0):s-one(Int32)
+            sample_k += one(Int32)
 
             # Sample on element i
-            u1, rng_state = _xorshift64(rng_state)
-            u2, rng_state = _xorshift64(rng_state)
+            u1, rng_state = _xorshift32(rng_state, T)
+            u2, rng_state = _xorshift32(rng_state, T)
             xi, nni, dAi = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                               nodes_quad4, nodes_tri3,
                                                fi, ni_idx,
                                                T((si + u1)/s), T((sj + u2)/s))
             Ai += dAi
 
             # Sample on element j
-            u3, rng_state = _xorshift64(rng_state)
-            u4, rng_state = _xorshift64(rng_state)
+            u3, rng_state = _xorshift32(rng_state, T)
+            u4, rng_state = _xorshift32(rng_state, T)
             xj, nnj, dAj = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                               nodes_quad4, nodes_tri3,
                                                fj, nj_idx,
                                                T((si + u3)/s), T((sj + u4)/s))
             Aj += dAj
@@ -216,16 +238,14 @@ end
     end
 
     # Remaining samples from full reference domain
-    for _ in sample_k+1:n_samples
-        u1, rng_state = _xorshift64(rng_state)
-        u2, rng_state = _xorshift64(rng_state)
+    for _ in sample_k+one(Int32):ns32
+        u1, rng_state = _xorshift32(rng_state, T)
+        u2, rng_state = _xorshift32(rng_state, T)
         xi, nni, dAi  = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                            nodes_quad4, nodes_tri3,
                                             fi, ni_idx, T(u1), T(u2))
-        u3, rng_state = _xorshift64(rng_state)
-        u4, rng_state = _xorshift64(rng_state)
+        u3, rng_state = _xorshift32(rng_state, T)
+        u4, rng_state = _xorshift32(rng_state, T)
         xj, nnj, dAj  = _sample_on_element(coords, nodes_quad, nodes_tri,
-                                            nodes_quad4, nodes_tri3,
                                             fj, nj_idx, T(u3), T(u4))
         Ai += dAi; Aj += dAj
         K = _vf_kernel_gpu(xi, nni, xj, nnj)
@@ -263,20 +283,21 @@ end
 
 # Map a (u1,u2) uniform pair in [0,1]² to a point on element family fi.
 # Family codes: 0=Quad8, 1=Tri6, 2=Quad4, 3=Tri3.
+# Quad4 elements share the `nodes_quad` matrix (first 4 of 8 rows) and Tri3
+# elements share `nodes_tri` (first 3 of 6 rows), matching build_gpu_arrays.
 @inline function _sample_on_element(coords, nodes_quad, nodes_tri,
-                                     nodes_quad4, nodes_tri3,
-                                     fi::Int, ni_idx::Int,
+                                     fi::Int, ni_idx::Int32,
                                      u1::T, u2::T) where T
     if fi == 0 || fi == 2   # quad: map [0,1]² → [-1,1]²
         ξ = T(2)*u1 - T(1)
         η = T(2)*u2 - T(1)
-        return fi == 0 ? _quad8_eval(coords, nodes_quad,  ni_idx, ξ, η) :
-                         _quad4_eval(coords, nodes_quad4, ni_idx, ξ, η)
+        return fi == 0 ? _quad8_eval(coords, nodes_quad, ni_idx, ξ, η) :
+                         _quad4_eval(coords, nodes_quad, ni_idx, ξ, η)
     else                    # tri: fold [0,1]² into reference triangle
         ξ = u1; η = u2
         if ξ + η > T(1); ξ = T(1)-ξ; η = T(1)-η; end
-        return fi == 1 ? _tri6_eval(coords, nodes_tri,  ni_idx, ξ, η) :
-                         _tri3_eval(coords, nodes_tri3, ni_idx, ξ, η)
+        return fi == 1 ? _tri6_eval(coords, nodes_tri, ni_idx, ξ, η) :
+                         _tri3_eval(coords, nodes_tri, ni_idx, ξ, η)
     end
 end
 
@@ -299,24 +320,22 @@ function launch_mc_kernel!(ga, backend;
                              flat_bvh           = nothing)
     N      = ga.N
     FloatT = ga.FloatT
-    ArrayT = typeof(ga.coords)
 
-    raw_out  = ArrayT(zeros(FloatT, N, N))
-    area_out = ArrayT(zeros(FloatT, N))
+    raw_out  = KernelAbstractions.zeros(backend, FloatT, N, N)
+    area_out = KernelAbstractions.zeros(backend, FloatT, N)
 
     use_bvh = flat_bvh !== nothing
-    dummy   = ArrayT(zeros(FloatT, 1, 1))   # placeholder when no BVH
+    dummy   = KernelAbstractions.zeros(backend, FloatT, 1, 1)   # placeholder when no BVH
     bvh_lo      = use_bvh ? flat_bvh.nodes_lo   : dummy
     bvh_hi      = use_bvh ? flat_bvh.nodes_hi   : dummy
-    bvh_meta    = use_bvh ? flat_bvh.nodes_meta  : ArrayT(zeros(Int32,1,1))
-    bvh_tri_idx = use_bvh ? flat_bvh.tri_idx     : ArrayT(zeros(Int32,1))
+    bvh_meta    = use_bvh ? flat_bvh.nodes_meta  : KernelAbstractions.zeros(backend, Int32, 1, 1)
+    bvh_tri_idx = use_bvh ? flat_bvh.tri_idx     : KernelAbstractions.zeros(backend, Int32, 1)
     bvh_tris    = use_bvh ? flat_bvh.tri_verts   : dummy
-    bvh_tri_grp = use_bvh ? flat_bvh.tri_group   : ArrayT(zeros(Int32,1))
+    bvh_tri_grp = use_bvh ? flat_bvh.tri_group   : KernelAbstractions.zeros(backend, Int32, 1)
 
     kern! = _mc_pair_kernel!(backend, (groupsize, groupsize))
     kern!(raw_out, area_out,
           ga.coords, ga.nodes_quad, ga.nodes_tri,
-          ga.nodes_quad4, ga.nodes_tri3,
           ga.elem_family, ga.elem_node_idx,
           n_samples, seed, use_bvh,
           bvh_lo, bvh_hi, bvh_meta, bvh_tri_idx, bvh_tris, bvh_tri_grp,
