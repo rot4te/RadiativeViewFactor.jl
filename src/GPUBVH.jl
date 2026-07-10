@@ -15,7 +15,7 @@
 #                [4] tri_count  — number of triangles (leaf only; 0 = interior)
 #                [5] miss_link  — next node to visit on AABB miss, or 0 = done
 # tri_idx    : Int32  (N,)     — sorted triangle permutation (from BVH build)
-# tri_verts  : FloatT (3,3,N)  — triangle vertices [vertex, xyz, tri]
+# tri_verts  : FloatT (3,3,N)  — triangle vertices [xyz, vertex, tri]
 # tri_group  : Int32  (N,)     — physical group tag per triangle (pre-permutation)
 #
 # Stackless traversal
@@ -239,10 +239,10 @@ const _GPU_T_EPS = 1f-6   # Float32 literal; cast to T inside the function
                     tg = bvh_tri_group[tidx]
                     (tg == group_i || tg == group_j) && continue
 
-                    # Triangle vertices [vertex 1..3, xyz 1..3, tri]
-                    v0x = T(bvh_tris[1, 1, tidx]);  v0y = T(bvh_tris[1, 2, tidx]);  v0z = T(bvh_tris[1, 3, tidx])
-                    v1x = T(bvh_tris[2, 1, tidx]);  v1y = T(bvh_tris[2, 2, tidx]);  v1z = T(bvh_tris[2, 3, tidx])
-                    v2x = T(bvh_tris[3, 1, tidx]);  v2y = T(bvh_tris[3, 2, tidx]);  v2z = T(bvh_tris[3, 3, tidx])
+                    # Triangle vertices [xyz 1..3, vertex 1..3, tri]
+                    v0x = T(bvh_tris[1, 1, tidx]);  v0y = T(bvh_tris[2, 1, tidx]);  v0z = T(bvh_tris[3, 1, tidx])
+                    v1x = T(bvh_tris[1, 2, tidx]);  v1y = T(bvh_tris[2, 2, tidx]);  v1z = T(bvh_tris[3, 2, tidx])
+                    v2x = T(bvh_tris[1, 3, tidx]);  v2y = T(bvh_tris[2, 3, tidx]);  v2z = T(bvh_tris[3, 3, tidx])
 
                     # Möller–Trumbore (fully scalar, no SVector allocations)
                     e1x = v1x-v0x;  e1y = v1y-v0y;  e1z = v1z-v0z

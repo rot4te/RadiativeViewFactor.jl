@@ -184,7 +184,8 @@ function _compute_cpu(mesh              ::MeshData,
                 sj = j == i ?
                      sample_element_mc(coords, elems[i], n_samples, row_rngs[i]) :
                      samples[j]
-                integ, _ = element_pair_view_factor_mc(si, sj, bvh, mesh_dim)
+                integ, _ = element_pair_view_factor_mc(si, sj, bvh, mesh_dim,
+                                                        row_rngs[i])
                 raw_integral[i, j] = integ
                 raw_integral[j, i] = integ
             end

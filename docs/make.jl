@@ -25,6 +25,7 @@ makedocs(
         "Theory"         => "theory.md",
         "API Reference"  => "api.md",
         "References"     => "references.md",
+        "Cite this repo" => "citing.md",
     ],
     # Only warn about missing docs for the symbols explicitly listed in @docs
     # blocks; internal helpers without @docs entries are expected and suppressed.

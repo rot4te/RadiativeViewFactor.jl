@@ -67,21 +67,38 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     end
 
     # Launch kernels
-    verbose && print("  Running GPU kernel… ")
+    verbose && println("  Running GPU kernel…")
     if monte_carlo
         seed = rand(UInt64)
         raw_dev, area_dev = launch_mc_kernel!(ga, backend;
                                                n_samples=n_samples,
                                                seed=seed,
-                                               flat_bvh=flat_bvh)
+                                               flat_bvh=flat_bvh,
+                                               verbose=verbose)
     else
         raw_dev, area_dev = launch_vf_kernel!(ga, backend; flat_bvh=flat_bvh)
     end
-    verbose && println("done.")
+    verbose && println("  …kernel done.")
 
     # Copy results back to CPU
     raw_cpu  = Array(raw_dev)
     area_cpu = Array(area_dev)
+
+    # Every element must have a positive area estimate.  A zero means the
+    # kernel never ran for that element: on Metal, macOS's GPU watchdog kills
+    # long-running command buffers ("Failed to submit command buffer:
+    # Impacting Interactivity"), and that error is only logged asynchronously
+    # — execution continues with partially-written buffers, which would turn
+    # into a silently NaN-filled view factor matrix below (0/0 in the row
+    # normalisation).  Fail loudly instead.
+    nzero = count(iszero, area_cpu)
+    if nzero > 0
+        error("GPU kernel returned a zero area for $nzero of $N elements — " *
+              "the kernel did not run to completion (on Metal, check the log " *
+              "for an asynchronous \"Impacting Interactivity\" command-buffer " *
+              "error from the macOS GPU watchdog), or the mesh contains " *
+              "degenerate elements.")
+    end
 
     # Promote to Float64 for all post-processing (aggregation, reciprocity checks)
     raw_f64  = Float64.(raw_cpu)
