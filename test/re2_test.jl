@@ -51,6 +51,12 @@ end
             @test length(m.group_elems[t]) == 3          # 3 faces per label
         end
 
+        # Every element carries its Nek (global element, local face) identity;
+        # for this single-hex fixture eg is always 1 and iface is the BC
+        # record's face index 1-6.
+        @test all(e -> e.eg == 1, m.surface_elems)
+        @test sort([e.iface for e in m.surface_elems]) == 1:6
+
         # total surface area of the unit cube = 6
         A = sum(element_pair_view_factor(m.coords, e, e, 2, nothing)[2]
                 for e in m.surface_elems)
@@ -66,9 +72,8 @@ end
         end
 
         # Physics check: the two faces perpendicular to z are directly-opposed
-        # unit squares a distance 1 apart → F ≈ 0.19982 (this pair has no shared
-        # edge, so it is well resolved by plain quadrature). Reciprocity is exact
-        # regardless. (A full cube's closure needs singular-edge integration.)
+        # unit squares a distance 1 apart → F ≈ 0.19982 (Hottel/Modest, no
+        # shared edge). Reciprocity is exact regardless of nquad/use_duffy.
         r  = compute_view_factors(m; nquad=6, verbose=false)
         @test check_reciprocity(r)
         zc = [sum(m.coords[3, e.nodes]) / 4 for e in m.surface_elems]
@@ -76,6 +81,25 @@ end
         i1 = findfirst(z -> isapprox(z, 1.0; atol=1e-9), zc)
         @test isapprox(r.F_elem[i0, i1], 0.19982; atol=5e-3)
         @test all(>(0), vec(sum(r.F_elem, dims=2)))   # every face sees the cavity
+
+        # Full-cube closure requires resolving the shared-edge singularity
+        # between every pair of adjacent Quad4 faces (every face pair in a
+        # cube is either opposite or edge-adjacent — there are no
+        # non-adjacent, non-opposite pairs). Plain quadrature overestimates
+        # this badly (rowsum ≈1.28 at nquad=6); use_duffy=true must bring it
+        # within a fraction of a percent of the true rowsum=1.0, and the
+        # adjacent-pair value must match Modest's closed-form perpendicular
+        # common-edge-rectangles result F≈0.20004.
+        r_plain = compute_view_factors(m; nquad=6, verbose=false)
+        rs_plain = vec(sum(r_plain.F_elem, dims=2))
+        @test all(x -> x > 1.2, rs_plain)   # the known-bad baseline, guards regressions
+
+        r_duffy = compute_view_factors(m; nquad=10, use_duffy=true, verbose=false)
+        @test check_reciprocity(r_duffy)
+        rs_duffy = vec(sum(r_duffy.F_elem, dims=2))
+        @test all(x -> isapprox(x, 1.0; atol=1e-3), rs_duffy)
+        adjacent_j = first(j for j in 1:6 if j != i0 && j != i1)   # any face adjacent to i0
+        @test isapprox(r_duffy.F_elem[i0, adjacent_j], 0.20004; atol=2e-3)
 
         rm(f)
     end
@@ -115,23 +139,32 @@ end
         # A real #v004 file: interior of a rectangular prism (0.5 × 1.0 × 0.05),
         # 8000 hexes, periodic in x. gmsh2nek labels the four solid walls "MSH"
         # and the two x-faces "P" (periodic). The loader must auto-detect the
-        # v004/8-byte/little-endian layout, keep the 1600 wall faces, and drop
-        # the 800 periodic faces.
+        # v004/8-byte/little-endian layout and keep *all* 2400 non-internal
+        # faces (1600 "MSH" + 800 "P") — periodic faces are boundary faces of
+        # the radiation enclosure too (Nek5000/NekRS's own view-factor module
+        # keeps every cbc≠'E'/blank face for closure; only 'W' emits, decided
+        # at Nek runtime, not by this loader). This is also the exact case
+        # documented in nekRS/tall_cavity_vf_aurora/ — its hemicube-derived
+        # reference view-factor file (vf_tall_cavity) has the same 2400-face
+        # header count.
         path = joinpath(@__DIR__, "tall_cavity.re2")
         if isfile(path)
             m = load_re2(path; verbose=false)
             @test m.mesh_dim == 2
-            @test length(m.surface_elems) == 1600
+            @test length(m.surface_elems) == 2400
             @test all(e -> e.family === :quad4, m.surface_elems)
-            @test collect(values(m.group_tags)) == ["MSH"]    # "P" faces excluded
+            @test sort(collect(values(m.group_tags))) == ["MSH", "P"]
+            @test length(m.group_elems[first(k for (k,v) in m.group_tags if v=="MSH")]) == 1600
+            @test length(m.group_elems[first(k for (k,v) in m.group_tags if v=="P")]) == 800
+            @test all(e -> e.eg > 0 && 1 <= e.iface <= 6, m.surface_elems)
 
-            # wall area of the cavity minus the two periodic x-faces:
-            # 2·(0.5×0.05) + 2·(0.5×1.0) = 1.05
+            # Full box surface area: 2*(Lx*Ly + Ly*Lz + Lx*Lz) with
+            # Lx=0.5, Ly=1.0, Lz=0.05 → 1.15 (wall 1.05 + periodic 0.10).
             A = sum(element_pair_view_factor(m.coords, e, e, 2, nothing)[2]
                     for e in m.surface_elems)
-            @test isapprox(A, 1.05; atol=1e-6)
+            @test isapprox(A, 1.15; atol=1e-6)
 
-            # all wall normals point into the cavity
+            # all normals point into the cavity, walls and periodic faces alike
             cen = SVector(sum(m.coords[1,:]), sum(m.coords[2,:]),
                           sum(m.coords[3,:])) / size(m.coords, 2)
             @test all(m.surface_elems) do e
@@ -140,15 +173,16 @@ end
                 dot(n̂, fc - cen) < 0
             end
 
-            # end-to-end solve: reciprocity is exact. The mean row sum is below 1
-            # because radiation escapes through the two periodic openings (a few
-            # individual faces exceed 1 from edge-singularity overcounting where
-            # walls meet — the same Quad4 limitation as a closed cube).
-            r  = compute_view_factors(m; nquad=3, verbose=false)
+            # End-to-end solve on the real, fully-closed enclosure: reciprocity
+            # is exact regardless of nquad; use_duffy=true is required for
+            # closure (row sums close to 1) since every face has several
+            # edge-adjacent neighbors in this structured mesh — without it,
+            # rowsum errors exceed 100% (see DuffyKernel.jl).
+            r  = compute_view_factors(m; nquad=6, use_duffy=true, verbose=false)
             rs = vec(sum(r.F_elem, dims=2))
             @test check_reciprocity(r)
-            @test sum(rs) / length(rs) < 1.0          # net leakage through openings
-            @test all(>(0), rs)                       # every wall sees the cavity
+            @test isapprox(sum(rs) / length(rs), 1.0; atol=0.02)
+            @test all(x -> 0.9 < x < 1.2, rs)
         else
             @info "tall_cavity.re2 not present; skipping real-file .re2 test."
         end

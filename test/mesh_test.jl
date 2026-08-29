@@ -7,6 +7,7 @@
   function make_plate_msh(path::String, order::Int; physical::Bool=true)
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 0)
+    gmsh.option.setNumber("Mesh.RecombineAll", 0)
     gmsh.model.add("plate")
     gmsh.model.geo.addPoint(0, 0, 0, 0.5, 1)
     gmsh.model.geo.addPoint(1, 0, 0, 0.5, 2)
@@ -68,6 +69,7 @@ end
   function make_two_plates_msh(path::String, order::Int, h::Float64)
     gmsh.initialize()
     gmsh.option.setNumber("General.Verbosity", 0)
+    gmsh.option.setNumber("Mesh.RecombineAll", 0)
     gmsh.model.add("plates")
     # Bottom plate (z=0)
     gmsh.model.geo.addPoint(0, 0, 0, h, 1);
