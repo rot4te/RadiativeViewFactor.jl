@@ -33,11 +33,40 @@ const ELEM_INFO = Dict{Int, NamedTuple}(
     10 => (n_nodes=9, n_corners=4, family=:quad),
 )
 
+"""
+    SurfaceElement(nodes, group, family, eg=0, iface=0, phys_tag=0)
+
+`eg` and `iface` are the Nek5000/NekRS global element number and local face
+index (1-6) this element corresponds to, populated by [`load_re2`](@ref) so
+that per-element view factors can be written back out in Nek's own
+`(element, face)` bookkeeping (see [`write_nekrs_view_factors`](@ref)). They
+default to `0` for elements loaded from any other mesh format, where the
+concept doesn't apply.
+
+`phys_tag` is the original numeric Gmsh `Physical Surface` tag for this
+face (Nek's `bc(5,ifc,iel,1)`, the same value `usrdat2` reads), also
+populated by `load_re2` (`0` otherwise). It exists because `group`/
+`group_tags` are keyed by the Nek boundary-condition *code* ('W', 'P', or a
+generic placeholder like "MSH" that `gmsh2nek` writes for every ordinary,
+non-periodic surface) — meshes with several differently-named Physical
+Surfaces that all end up with the same generic code (e.g. two concentric
+spheres, or a pebble bed's pebble/duct-wall surfaces) are otherwise
+indistinguishable by `group` alone, even though `usrdat2` can tell them
+apart. Use [`split_groups_by_tag`](@ref) to regroup a mesh at
+`(code, phys_tag)` granularity when you need to select one such surface as
+an `obstruction_groups` entry.
+"""
 struct SurfaceElement
-    nodes  :: Vector{Int}
-    group  :: Int
-    family :: Symbol        # :line3 | :tri | :quad
-end; export SurfaceElement
+    nodes    :: Vector{Int}
+    group    :: Int
+    family   :: Symbol        # :line3 | :tri | :quad
+    eg       :: Int           # Nek5000 global element number (.re2 only; 0 otherwise)
+    iface    :: Int           # Nek5000 local face index 1-6 (.re2 only; 0 otherwise)
+    phys_tag :: Int           # original Gmsh Physical Surface tag (.re2 only; 0 otherwise)
+end
+SurfaceElement(nodes, group, family) = SurfaceElement(nodes, group, family, 0, 0, 0)
+SurfaceElement(nodes, group, family, eg, iface) = SurfaceElement(nodes, group, family, eg, iface, 0)
+export SurfaceElement
 
 """
     MeshData
@@ -595,7 +624,7 @@ function _orient_line3_normals!(surface_elems::Vector{SurfaceElement},
             if dot(actual_n, toward_surface) < 0.0
                 nodes = copy(el.nodes)
                 nodes[1], nodes[2] = nodes[2], nodes[1]
-                surface_elems[idx] = SurfaceElement(nodes, el.group, el.family)
+                surface_elems[idx] = SurfaceElement(nodes, el.group, el.family, el.eg, el.iface, el.phys_tag)
                 n_flipped += 1
             end
         end
@@ -637,7 +666,7 @@ function _reverse_all_normals!(surface_elems::Vector{SurfaceElement},
         elseif el.family === :tri3
             nodes[1], nodes[3] = nodes[3], nodes[1]
         end
-        surface_elems[i] = SurfaceElement(nodes, el.group, el.family)
+        surface_elems[i] = SurfaceElement(nodes, el.group, el.family, el.eg, el.iface, el.phys_tag)
     end
 end
 
@@ -718,8 +747,18 @@ end
 # and local face → corner map (BC `iside` is 1-based into this tuple):
 const _RE2_HEX_FACE = ((1,2,6,5), (2,3,7,6), (3,4,8,7),
                        (4,1,5,8), (1,2,3,4), (5,6,7,8))
-# Boundary-condition codes that denote *internal* connections (not radiating):
-const _RE2_INTERNAL_BC = Set(["E", "P", ""])
+# Boundary-condition codes that denote genuinely *internal* connections, not
+# part of the domain's topological boundary: 'E' (conforming element-element
+# face) and blank (unset). 'P' (periodic) is *not* included here — although
+# periodic faces aren't solid walls, Nek5000/NekRS's own view-factor module
+# (`view_factors.f`'s `vf_export_all_walls`/`vf_calculate_radiation_heat_flux`,
+# selecting on `cbc.ne.'E  '.and.cbc.ne.'   '`) keeps every non-'E'/blank face
+# — including periodic and inlet/outlet faces — in the radiation enclosure so
+# that view factors close (each face's row sums to 1); only solid walls (`cbc.eq.
+# 'W  '`) additionally *emit*, decided at Nek5000 runtime, not by this loader.
+# Dropping 'P' faces here would silently reproduce the "open/leaky boundary"
+# (`open_face_option=2`) case instead of the closed-enclosure default.
+const _RE2_INTERNAL_BC = Set(["E", ""])
 
 _is_re2(filename::AbstractString)::Bool =
     lowercase(splitext(filename)[2]) == ".re2"
@@ -757,7 +796,7 @@ function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
     corners = Array{Float64,3}(undef, 3, nvert, nelgt)
     for e in 1:nelgt
         vals, off = _re2_reals(bytes, off, 1 + ncoord, T, swap)   # igroup + coords
-        off > total && return (false, corners, Tuple{Int,Int,String}[])
+        off > total && return (false, corners, Tuple{Int,Int,String,Int}[])
         @inbounds for v in 1:nvert
             corners[1, v, e] = vals[1 + v]                 # x block
             corners[2, v, e] = vals[1 + nvert + v]         # y block
@@ -766,15 +805,15 @@ function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
     end
 
     # curved-side block: count, then ncurve records (skipped — corners suffice)
-    off + wdsize > total && return (false, corners, Tuple{Int,Int,String}[])
+    off + wdsize > total && return (false, corners, Tuple{Int,Int,String,Int}[])
     cval, off = _re2_reals(bytes, off, 1, T, swap)
     ncurve    = round(Int, cval[1])
     (ncurve < 0 || off + ncurve*recsize > total) &&
-        return (false, corners, Tuple{Int,Int,String}[])
+        return (false, corners, Tuple{Int,Int,String,Int}[])
     off += ncurve * recsize
 
     # boundary-condition block: one or more fields, each `nbc` then nbc records
-    bc = Tuple{Int,Int,String}[]
+    bc = Tuple{Int,Int,String,Int}[]
     while off < total
         off + wdsize > total && return (false, corners, bc)
         nval, off = _re2_reals(bytes, off, 1, T, swap)
@@ -785,7 +824,10 @@ function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
             r, off = _re2_reals(bytes, off, 7, T, swap)   # elem, face, 5 params
             code   = rstrip(String(bytes[off+1 : off+3]), [' ', '\0'])  # char*8 slot
             off   += 8
-            push!(bc, (round(Int, r[1]), round(Int, r[2]), code))
+            # r[7] is bc(5,ifc,iel,1) -- gmsh2nek writes the original Gmsh
+            # Physical Surface tag there for every non-periodic boundary
+            # face (see SurfaceElement.phys_tag's docstring).
+            push!(bc, (round(Int, r[1]), round(Int, r[2]), code, round(Int, r[7])))
         end
     end
 
@@ -797,8 +839,17 @@ end
 
 Load a Nek5000/NekRS `.re2` binary mesh. The 3D hex volume mesh's boundary
 faces become radiating Quad4 surfaces, grouped by their Nek boundary-condition
-label (internal `E`/`P` faces are skipped). Word size (4- or 8-byte reals) and
-byte order are auto-detected. Only `surface_dim=2` (3D → surfaces) is supported.
+label. Only genuinely internal faces (`cbc = 'E'` or blank) are skipped;
+periodic (`'P'`) faces are kept as their own group, matching Nek5000/NekRS's
+own view-factor convention of including every non-internal boundary face in
+the radiation enclosure so that view factors close (row sums to 1) — solid
+walls vs. other boundaries is a runtime (`cbc.eq.'W  '`) distinction made by
+the case's `.usr` file, not something this loader can determine from `.re2`
+labels alone. Each element's Nek global element number and local face index
+(1-6) are recorded in `SurfaceElement.eg`/`.iface` for round-tripping view
+factors back into Nek5000's `(element, face)` bookkeeping — see
+[`write_nekrs_view_factors`](@ref). Word size (4- or 8-byte reals) and byte
+order are auto-detected. Only `surface_dim=2` (3D → surfaces) is supported.
 """
 function load_re2(filename::AbstractString;
                   surface_dim    ::Int  = 2,
@@ -896,7 +947,7 @@ function _re2_orient_inward(coords::Matrix{Float64}, face::NTuple{4,Int},
 end
 
 function _re2_build_mesh(corners::Array{Float64,3},
-                         bc::Vector{Tuple{Int,Int,String}},
+                         bc::Vector{Tuple{Int,Int,String,Int}},
                          reverse_normals::Bool, verbose::Bool)::MeshData
     nelgt = size(corners, 3)
     coords, elem_nodes = _re2_dedup_nodes(corners)
@@ -925,12 +976,12 @@ function _re2_build_mesh(corners::Array{Float64,3},
     end
 
     if !isempty(radiating)
-        for (eg, iside, code) in radiating
+        for (eg, iside, code, ptag) in radiating
             (1 <= eg <= nelgt && 1 <= iside <= 6) || continue
             fnodes = ntuple(k -> elem_nodes[_RE2_HEX_FACE[iside][k], eg], 4)
             fnodes = _re2_orient_inward(coords, fnodes, centroid(eg))
             gtag   = tag_for(code)
-            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4))
+            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4, eg, iside, ptag))
             push!(group_elems[gtag], length(surface_elems))
         end
         verbose && println("  .re2: $(length(surface_elems)) boundary faces in " *
@@ -955,7 +1006,7 @@ function _re2_build_mesh(corners::Array{Float64,3},
             e, f   = face_count[key]
             fnodes = ntuple(k -> elem_nodes[_RE2_HEX_FACE[f][k], e], 4)
             fnodes = _re2_orient_inward(coords, fnodes, centroid(e))
-            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4))
+            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4, e, f))
             push!(group_elems[gtag], length(surface_elems))
         end
         verbose && println("  .re2: $(length(surface_elems)) topological " *
@@ -974,5 +1025,62 @@ function _re2_build_mesh(corners::Array{Float64,3},
     return MeshData(coords, surface_elems, group_tags, group_elems,
                     group_tri_soup, 2)
 end
+
+"""
+    split_groups_by_tag(mesh::MeshData) -> MeshData
+
+Return a new `MeshData` with `group`/`group_tags`/`group_elems`/
+`group_tri_soup` refined to `(code, phys_tag)` granularity instead of just
+`code`. `load_re2`'s default grouping is by Nek boundary-condition *code*
+('W', 'P', or a generic placeholder like "MSH"), which `gmsh2nek` writes
+identically for every ordinary, non-periodic surface regardless of which
+named `Physical Surface` it came from — so two concentric spheres, or a
+pebble bed's pebble/duct-wall surfaces, land in the same group and can't be
+told apart via `group` alone even though `usrdat2` distinguishes them via
+`bc(5,ifc,iel,1)` (exposed here as [`SurfaceElement`](@ref)'s `phys_tag`).
+
+Call this once after `load_re2` when you need to pass one particular named
+surface to `compute_view_factors`'s `obstruction_groups` — e.g. the inner
+sphere blocking the outer sphere's concave self-view, or a pebble blocking
+view between two duct-wall patches. Elements with `phys_tag == 0` (any mesh
+not loaded from a `.re2` file) keep their original group unchanged, so this
+is a no-op for non-Nek meshes.
+
+```julia
+mesh  = load_re2("case.re2")
+mesh2 = split_groups_by_tag(mesh)
+# mesh2.group_tags now has one entry per (code, phys_tag) pair, e.g.
+# 1 => "MSH", 2 => "MSH#2", ... instead of a single merged "MSH" group.
+inner = findfirst(t -> occursin("#1", t), collect(values(mesh2.group_tags)))
+compute_view_factors(mesh2; obstruction_groups=[inner], ...)
+```
+"""
+function split_groups_by_tag(mesh::MeshData)::MeshData
+    elems = mesh.surface_elems
+    key(e) = e.phys_tag == 0 ? (e.group, 0) : (e.group, e.phys_tag)
+
+    newgroup_of  = Dict{Tuple{Int,Int}, Int}()
+    new_tags     = Dict{Int,String}()
+    new_elems_by = Dict{Int,Vector{Int}}()
+    new_elems    = Vector{SurfaceElement}(undef, length(elems))
+
+    for (idx, e) in enumerate(elems)
+        k = key(e)
+        g = get!(newgroup_of, k) do
+            length(newgroup_of) + 1
+        end
+        if !haskey(new_tags, g)
+            base = mesh.group_tags[e.group]
+            new_tags[g] = e.phys_tag == 0 ? base : "$(base)#$(e.phys_tag)"
+            new_elems_by[g] = Int[]
+        end
+        push!(new_elems_by[g], idx)
+        new_elems[idx] = SurfaceElement(e.nodes, g, e.family, e.eg, e.iface, e.phys_tag)
+    end
+
+    soups = _build_group_obs_soups(mesh.coords, new_elems, new_elems_by, mesh.mesh_dim)
+    return MeshData(mesh.coords, new_elems, new_tags, new_elems_by, soups, mesh.mesh_dim)
+end
+export split_groups_by_tag
 
 end # module MeshIO

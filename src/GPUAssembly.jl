@@ -15,6 +15,7 @@ import ..GPUKernels:   build_gpu_arrays, launch_vf_kernel!
 import ..GPUMCKernels: launch_mc_kernel!
 import ..Results:      ViewFactorResult, _aggregate
 import ..Assembly:     register_gpu_hook!
+import ..DuffyKernel:  patch_adjacent_pairs_duffy!
 
 export compute_view_factors_gpu
 
@@ -86,6 +87,17 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     # Promote to Float64 for all post-processing (aggregation, reciprocity checks)
     raw_f64  = Float64.(raw_cpu)
     area_f64 = Float64.(area_cpu)
+
+    # The 1/r² kernel has unbounded variance for vertex/edge-adjacent
+    # pairs — sampling more doesn't fix this, on GPU any more than on CPU.
+    # Patch those O(N) pairs on the CPU with the deterministic Duffy
+    # transform, on top of whatever ran on the GPU for the O(N²) bulk.
+    if monte_carlo
+        verbose && print("  Patching adjacent-pair singularities (Duffy, CPU)… ")
+        patch_adjacent_pairs_duffy!(raw_f64, mesh.coords, mesh.surface_elems,
+                                     nquad, mesh.mesh_dim)
+        verbose && println("done.")
+    end
 
     # Divide each row i by A[i] to get F_elem
     F_elem = raw_f64 ./ reshape(area_f64, N, 1)

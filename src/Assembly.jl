@@ -12,7 +12,8 @@ import ..BVH:              BVHTree, build_bvh
 import ..ViewFactorKernel: element_pair_view_factor, precompute_quad, ElementQuad
 import ..MCKernel:         element_pair_view_factor_mc, sample_element_mc,
                            ElementSamples
-import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type
+import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type,
+                           patch_adjacent_pairs_duffy!
 import ..Results:          ViewFactorResult, _aggregate, aggregate_by_group,
                            check_reciprocity, check_closure
 
@@ -33,23 +34,41 @@ Assemble the full view factor matrix at element and physical-group level.
 # Arguments
 - `mesh`                : `MeshData` returned by `load_mesh`
 - `nquad`               : Gauss points per direction; `nquad²` points per surface
-                          element pair, `nquad` per curve element pair.
-                          Ignored when `monte_carlo=true`.
+                          element pair, `nquad` per curve element pair. When
+                          `monte_carlo=true`, only used for the adjacent-pair
+                          Duffy patch (see `monte_carlo` below), not the bulk
+                          sampling.
 - `obstruction_groups`  : physical group tags that may occlude rays. Source and
                           destination groups are excluded automatically per pair.
+                          Not applied to the Monte Carlo adjacent-pair patch —
+                          two elements sharing a vertex/edge cannot have a
+                          third surface positioned between them.
 - `backend`             : `CPU()` (default), `CUDABackend()`, or `MetalBackend()`
 - `self_vf`             : include self view factors (concave elements). CPU only.
 - `monte_carlo`         : use stratified Monte Carlo area-sampling instead of
-                          Gauss–Legendre quadrature. Works on all backends.
-                          Incompatible with `use_duffy=true`.
+                          Gauss–Legendre quadrature for the O(N²) bulk of
+                          element pairs — the fastest option for large meshes,
+                          especially on GPU. The 1/r² kernel has *unbounded*
+                          variance for pairs sharing a vertex or edge, so no
+                          amount of sampling fixes those; this function
+                          therefore always patches those O(N) pairs
+                          afterward with the deterministic Duffy transform
+                          (CPU-only, using `nquad` above), on top of
+                          whichever backend the bulk ran on. `use_duffy` has
+                          no separate effect here — the patch is
+                          unconditional whenever `monte_carlo=true`.
 - `n_samples`           : MC sample pairs **per element pair**. Ignored when
-                          `monte_carlo=false`. Variance decreases as O(1/N).
+                          `monte_carlo=false`. Variance decreases as O(1/N)
+                          for the (non-adjacent) pairs Monte Carlo handles.
 - `rng`                 : RNG for the CPU MC path. Pass a seeded RNG (e.g.
                           `MersenneTwister(42)`) for reproducible results.
                           Ignored on GPU.
-- `use_duffy`           : apply the Sauter–Schwab Duffy transformation for Quad8
-                          element pairs sharing a vertex or edge. CPU only;
-                          incompatible with `monte_carlo=true`.
+- `use_duffy`           : apply the Duffy singularity transformation (see
+                          `DuffyKernel.jl`) for same-order quad pairs (Quad4
+                          or Quad8) sharing a vertex or edge, in the plain
+                          quadrature path. CPU only. Ignored when
+                          `monte_carlo=true` (that path always Duffy-patches
+                          adjacent pairs regardless of this flag).
 - `verbose`             : print progress and row-sum diagnostics
 
 # Returns
@@ -59,7 +78,9 @@ A `ViewFactorResult`.
 ```julia
 result = compute_view_factors(mesh; nquad=6)
 result = compute_view_factors(mesh; nquad=6, use_duffy=true)
-result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000)
+result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000)               # CPU
+result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000,
+                               backend=CUDABackend())                                 # GPU — fastest for large meshes
 ```
 """
 function compute_view_factors(mesh               ::MeshData;
@@ -75,10 +96,8 @@ function compute_view_factors(mesh               ::MeshData;
 
     backend isa Type && (backend = backend())
 
-    use_duffy && !(backend isa CPU) &&
+    use_duffy && !monte_carlo && !(backend isa CPU) &&
         @warn "use_duffy is CPU-only; ignored for GPU backends."
-    use_duffy && monte_carlo &&
-        error("use_duffy and monte_carlo cannot both be true.")
 
     if !(backend isa CPU)
         if mesh.mesh_dim == 1
@@ -190,6 +209,12 @@ function _compute_cpu(mesh              ::MeshData,
             end
             verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
         end
+        # The 1/r² kernel has unbounded variance for vertex/edge-adjacent
+        # pairs — no amount of sampling fixes this. Patch those O(N) pairs
+        # with the deterministic Duffy transform (see DuffyKernel.jl).
+        verbose && print("  Patching adjacent-pair singularities (Duffy)… ")
+        patch_adjacent_pairs_duffy!(raw_integral, coords, elems, nquad, mesh_dim)
+        verbose && println("done.")
     else
         # Pre-evaluate each element's quadrature points once (O(N)) instead of
         # re-deriving them for every pair inside the O(N²) loop below.

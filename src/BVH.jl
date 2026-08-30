@@ -51,7 +51,7 @@ Fields
 struct BVHTree
     nodes    :: Vector{BVHNode}
     tri_idx  :: Vector{Int}
-    tri_soup :: Array{Float64, 3}   # 3 × 3 × N  (vertex, coord, tri)
+    tri_soup :: Array{Float64, 3}   # 3 × 3 × N  (coord, vertex, tri)
 end; export BVHTree
 
 # ---------------------------------------------------------------------------
@@ -151,19 +151,37 @@ end
 # Ray–AABB intersection (slab method)
 # ---------------------------------------------------------------------------
 
+"""
+Per-axis slab bounds for the ray/AABB test. Handles a ray direction
+component of exactly zero explicitly: `inv_d = 1/0 = ±Inf` there, and if the
+box also touches the ray's origin on that axis (`lo == o` or `hi == o`,
+common for axis-aligned/planar test geometry), the direct formula computes
+`0 * Inf = NaN`, which silently makes `_ray_aabb` reject an otherwise-valid
+hit (NaN compares false against everything). A ray parallel to an axis
+passes that axis's slab whenever the origin lies within `[lo, hi]`,
+independent of `t`, so that case is handled as an unconstrained
+`(-Inf, Inf)` (or an impossible `(Inf, -Inf)` when the origin is outside).
+"""
+@inline function _slab_t(lo::Float64, hi::Float64, o::Float64,
+                          d::Float64, inv_d::Float64)::Tuple{Float64,Float64}
+    if d == 0.0
+        return (lo <= o <= hi) ? (-Inf, Inf) : (Inf, -Inf)
+    end
+    t1 = (lo - o) * inv_d
+    t2 = (hi - o) * inv_d
+    return t1 < t2 ? (t1, t2) : (t2, t1)
+end
+
 """Return true if ray (origin `o`, direction `d`) hits `box` before t=`tmax`."""
-@inline function _ray_aabb(o::SVector{3,Float64},
+@inline function _ray_aabb(o::SVector{3,Float64}, d::SVector{3,Float64},
                             inv_d::SVector{3,Float64},
                             box::AABB, tmax::Float64)::Bool
-    t1x = (box.lo[1] - o[1]) * inv_d[1]
-    t2x = (box.hi[1] - o[1]) * inv_d[1]
-    t1y = (box.lo[2] - o[2]) * inv_d[2]
-    t2y = (box.hi[2] - o[2]) * inv_d[2]
-    t1z = (box.lo[3] - o[3]) * inv_d[3]
-    t2z = (box.hi[3] - o[3]) * inv_d[3]
+    lo1, hi1 = _slab_t(box.lo[1], box.hi[1], o[1], d[1], inv_d[1])
+    lo2, hi2 = _slab_t(box.lo[2], box.hi[2], o[2], d[2], inv_d[2])
+    lo3, hi3 = _slab_t(box.lo[3], box.hi[3], o[3], d[3], inv_d[3])
 
-    tmin = max(min(t1x,t2x), min(t1y,t2y), min(t1z,t2z), 0.0)
-    tmax2 = min(max(t1x,t2x), max(t1y,t2y), max(t1z,t2z), tmax)
+    tmin  = max(lo1, lo2, lo3, 0.0)
+    tmax2 = min(hi1, hi2, hi3, tmax)
 
     return tmin <= tmax2
 end
@@ -224,19 +242,29 @@ function intersect_ray_bvh(bvh      ::BVHTree,
         nidx = stack[sp];  sp -= 1
         node = bvh.nodes[nidx]
 
-        _ray_aabb(origin, inv_d, node.aabb, t_max) || continue
+        _ray_aabb(origin, direction, inv_d, node.aabb, t_max) || continue
 
         if node.left == 0   # leaf
             for k in node.tri_start : node.tri_start + node.tri_count - 1
                 tidx = bvh.tri_idx[k]
+                # tri_soup layout is (xyz, vertex, triangle) -- dim 1 is the
+                # coordinate axis, dim 2 is the vertex index (see
+                # _build_group_obs_soups in MeshIO.jl and _triangle_aabb /
+                # _centroid above, which both read it this way correctly).
+                # This was previously transposed here, reading each
+                # SVector as (x1,x2,x3) etc. instead of (x,y,z) of one
+                # vertex -- i.e. testing three bogus points built from the
+                # three vertices' *same-axis* coordinates instead of the
+                # three real vertices, which silently broke essentially all
+                # 3-D ray/triangle obstruction queries.
                 v0 = SVector{3,Float64}(bvh.tri_soup[1,1,tidx],
-                                         bvh.tri_soup[1,2,tidx],
-                                         bvh.tri_soup[1,3,tidx])
-                v1 = SVector{3,Float64}(bvh.tri_soup[2,1,tidx],
+                                         bvh.tri_soup[2,1,tidx],
+                                         bvh.tri_soup[3,1,tidx])
+                v1 = SVector{3,Float64}(bvh.tri_soup[1,2,tidx],
                                          bvh.tri_soup[2,2,tidx],
-                                         bvh.tri_soup[2,3,tidx])
-                v2 = SVector{3,Float64}(bvh.tri_soup[3,1,tidx],
-                                         bvh.tri_soup[3,2,tidx],
+                                         bvh.tri_soup[3,2,tidx])
+                v2 = SVector{3,Float64}(bvh.tri_soup[1,3,tidx],
+                                         bvh.tri_soup[2,3,tidx],
                                          bvh.tri_soup[3,3,tidx])
                 t = _ray_triangle(origin, direction, v0, v1, v2, 0.0)
                 t < t_max && return true

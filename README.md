@@ -149,8 +149,19 @@ mesh = load_vtu("grid.vtu"; group_field="RegionId") # per-cell region → groups
 # Nek5000/NekRS .re2 (3D hex) → boundary faces grouped by BC label:
 mesh = load_mesh("cavity.re2")     # auto-detected; no extra dependency
 mesh = load_re2("cavity.re2")      # or call the loader directly
-# Groups are the Nek boundary-condition labels (e.g. "W", "v", "O"); normals
-# point into the fluid cavity. Use reverse_normals=true for the opposite sense.
+# Groups are the Nek boundary-condition labels (e.g. "W", "v", "O", "P");
+# periodic ("P") faces are kept as their own group rather than dropped —
+# Nek5000/NekRS's own view-factor module keeps every non-internal boundary
+# face in the enclosure for closure (only 'W' emits, a runtime decision made
+# by the case's .usr file, not by this loader). Normals point into the fluid
+# cavity; use reverse_normals=true for the opposite sense. .re2 meshes are
+# always Quad4 — use_duffy=true is recommended for structured hex-mesh
+# boundaries, since edge-adjacent Quad4 pairs are common and plain
+# quadrature overestimates their view factor (see "Duffy transformation"
+# below). Elements also carry their Nek (global element, local face) id in
+# `SurfaceElement.eg`/`.iface`; write results back to Nek5000/NekRS's own
+# view-factor file format with `write_nekrs_view_factors`:
+write_nekrs_view_factors("vf_cavity", result, mesh)
 ```
 
 ### Obstruction detection
@@ -222,12 +233,14 @@ The double integral is evaluated at fixed tensor-product Gauss points on each el
 
 ### Duffy transformation
 
-For Quad8 element pairs sharing a vertex or edge, the `1/r²` singularity in the kernel is integrable but not efficiently resolved by standard quadrature. The Duffy transformation introduces a radial coordinate ρ measuring distance to the singular point; the Jacobian ρ³ of the 4D transformation cancels the singularity, leaving a bounded integrand on which Gauss quadrature converges rapidly. The implementation uses the Sauter–Schwab decomposition:
+For same-order quad element pairs (Quad4-Quad4 or Quad8-Quad8) sharing a vertex or edge, the `1/r²` singularity in the kernel is integrable but not efficiently resolved by standard quadrature — this matters most for Quad4, since that's the family every `.re2` mesh uses, and structured hex-mesh boundaries have many edge-adjacent Quad4 pairs. The Duffy transformation introduces a radial coordinate ρ measuring distance to the singular point; the Jacobian from the transformation cancels the singularity, leaving a bounded integrand on which Gauss quadrature converges rapidly. The implementation uses a "biggest-coordinate" decomposition (split the unit hypercube by which shifted coordinate has the largest magnitude, then rescale the rest by that coordinate — an elementary generalization of Duffy's original single-simplex transform, not the specific Sauter–Schwab region formulas):
 
-- **Common vertex**: 8-region decomposition, each integrated with `nquad⁴` points (total `8 × nquad⁴`)
-- **Common edge**: 5-region decomposition, each integrated with `nquad⁴` points (total `5 × nquad⁴`)
+- **Common vertex**: 4-region decomposition (ρ³ Jacobian), each integrated with `nquad⁴` points (total `4 × nquad⁴`)
+- **Common edge**: 6-region decomposition — split into the two `u≥s`/`u<s` triangles along the shared edge, each further split 3 ways by which of (edge-position mismatch, perpendicular-i, perpendicular-j) is largest (`u·ρ²` or `s·ρ²` Jacobian) — each integrated with `nquad⁴` points (total `6 × nquad⁴`)
 
-Pairs with no shared nodes use standard quadrature (`nquad⁴` points). The singularity type is detected automatically from shared global node indices.
+Pairs with no shared nodes use standard quadrature (`nquad⁴` points). The singularity type is detected from shared global node indices; for the common-edge case, the shared corners' correspondence order (which physical node is elem_i's edge-start vs elem_j's edge-start) comes directly from that node matching, so the two elements' edge-local parametrizations are guaranteed aligned without separately tracking traversal direction.
+
+Both decompositions are validated against closed-form results: a fully-closed cube's row sums converge to 1.0 (from ~1.28, uncorrected) and its adjacent-face view factor matches the classical perpendicular-common-edge-rectangles value (Modest, *Radiative Heat Transfer*, F≈0.20004) to within a fraction of a percent — see `test/duffy_correctness_test.jl`.
 
 Note: the 2D kernel `1/r` for Line3 elements produces a logarithmic divergence (not `1/r²`) at shared endpoints, which is physically real and not regularizable by the Duffy transformation. `use_duffy` has no effect for `surface_dim=1`.
 
@@ -237,7 +250,9 @@ The MC estimator for each element pair draws N stratified sample pairs (xᵢ, x�
 
 $$\iint K \, dA_j \, dA_i \approx \frac{A_i \cdot A_j}{N} \sum_{k=1}^{N} K(x_i^{(k)}, n_i^{(k)}, x_j^{(k)}, n_j^{(k)}) \cdot H_{ij}^{(k)}$$
 
-Samples are drawn on a ⌊√N⌋ × ⌊√N⌋ stratified grid within the reference element, giving O(1/N) variance convergence for smooth integrands rather than O(1/√N) for plain Monte Carlo. Near corner singularities the variance of the MC estimator diverges (infinite variance for the `1/r²` kernel), making `use_duffy` preferable for those geometries.
+Samples are drawn on a ⌊√N⌋ × ⌊√N⌋ stratified grid within the reference element, giving O(1/N) variance convergence for smooth integrands rather than O(1/√N) for plain Monte Carlo. Near vertex/edge singularities the variance of the MC estimator diverges (infinite variance for the `1/r²` kernel) — and even for pairs that are merely *close* relative to their own size without literally touching, the variance is high enough that more samples doesn't reliably shrink the error (confirmed empirically on a real mesh: 2000→8000 samples/pair left the worst row's error unchanged).
+
+Because of this, `compute_view_factors(mesh; monte_carlo=true, ...)` **always** patches every near pair (touching or merely close — see [`near_pairs`](@ref), a superset found via a spatial grid over element centroids in `factor` element-diameters, default `factor=3.0`) with the deterministic `element_pair_view_factor_duffy` value (CPU, using `nquad`) after the Monte Carlo bulk finishes, on whichever backend that bulk ran on. This is the fastest option for large meshes, especially on GPU: the O(N²) well-separated bulk — genuinely low-variance for Monte Carlo — gets the GPU's throughput, while the O(N) near-pair correction is asymptotically free at scale and is what actually gets you a closed (row-sums-to-1) result. `use_duffy` has no separate effect when `monte_carlo=true`; the patch is unconditional.
 
 On GPU, each thread uses an independent xorshift64 pseudo-random number stream seeded by mixing the global seed with the thread index via the splitmix64 hash.
 

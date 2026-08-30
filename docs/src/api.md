@@ -25,6 +25,12 @@ RadiativeViewFactor.check_reciprocity
 RadiativeViewFactor.check_closure
 ```
 
+## Nek5000/NekRS export
+
+```@docs
+RadiativeViewFactor.write_nekrs_view_factors
+```
+
 ## Visualisation
 
 ```@docs
