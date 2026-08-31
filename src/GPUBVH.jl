@@ -239,14 +239,7 @@ const _GPU_T_EPS = 1f-6   # Float32 literal; cast to T inside the function
                     tg = bvh_tri_group[tidx]
                     (tg == group_i || tg == group_j) && continue
 
-                    # tri_verts layout is (xyz, vertex, tri) -- same as CPU
-                    # tri_soup (see MeshIO.jl's _build_group_obs_soups) --
-                    # dim 1 is the coordinate axis, dim 2 is the vertex
-                    # index. This was previously transposed here (reading
-                    # each vertex's xyz from three DIFFERENT vertices'
-                    # same-axis coordinates), which silently broke GPU
-                    # obstruction testing the same way the CPU path was
-                    # broken in BVH.jl's intersect_ray_bvh.
+                    # Triangle vertices [xyz 1..3, vertex 1..3, tri]
                     v0x = T(bvh_tris[1, 1, tidx]);  v0y = T(bvh_tris[2, 1, tidx]);  v0z = T(bvh_tris[3, 1, tidx])
                     v1x = T(bvh_tris[1, 2, tidx]);  v1y = T(bvh_tris[2, 2, tidx]);  v1z = T(bvh_tris[3, 2, tidx])
                     v2x = T(bvh_tris[1, 3, tidx]);  v2y = T(bvh_tris[2, 3, tidx]);  v2z = T(bvh_tris[3, 3, tidx])

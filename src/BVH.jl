@@ -64,9 +64,10 @@ const LEAF_MAX = 8   # max triangles per leaf node
     build_bvh(tri_soup) -> BVHTree
 
 Build a BVH over the triangle soup.  `tri_soup` must be (3, 3, N):
-  - dim 1: vertex index (1, 2, 3)
-  - dim 2: xyz coordinate (1, 2, 3)
+  - dim 1: xyz coordinate (1, 2, 3)
+  - dim 2: vertex index (1, 2, 3)
   - dim 3: triangle index
+(the layout produced by `MeshIO._build_group_obs_soups`).
 """
 function build_bvh(tri_soup::Array{Float64,3})::BVHTree
     N       = size(tri_soup, 3)
@@ -261,7 +262,13 @@ function intersect_ray_bvh(bvh      ::BVHTree,
                                          bvh.tri_soup[2,1,tidx],
                                          bvh.tri_soup[3,1,tidx])
                 v1 = SVector{3,Float64}(bvh.tri_soup[1,2,tidx],
+                                         bvh.tri_soup[2,1,tidx],
+                                         bvh.tri_soup[3,1,tidx])
+                v1 = SVector{3,Float64}(bvh.tri_soup[1,2,tidx],
                                          bvh.tri_soup[2,2,tidx],
+                                         bvh.tri_soup[3,2,tidx])
+                v2 = SVector{3,Float64}(bvh.tri_soup[1,3,tidx],
+                                         bvh.tri_soup[2,3,tidx],
                                          bvh.tri_soup[3,2,tidx])
                 v2 = SVector{3,Float64}(bvh.tri_soup[1,3,tidx],
                                          bvh.tri_soup[2,3,tidx],

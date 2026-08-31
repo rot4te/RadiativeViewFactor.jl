@@ -678,7 +678,7 @@ end
 Build per-group obstruction geometry.
 
 Surface meshes (dim=2): triangle soup (3, 3, N_tris).
-  dim 1 = vertex index (1,2,3), dim 2 = xyz (1,2,3), dim 3 = triangle.
+  dim 1 = xyz (1,2,3), dim 2 = vertex index (1,2,3), dim 3 = triangle.
 
 Curve meshes (dim=1): segment soup (3, 2, N_segs).
   dim 1 = xyz (1,2,3), dim 2 = endpoint (1 or 2), dim 3 = segment.
