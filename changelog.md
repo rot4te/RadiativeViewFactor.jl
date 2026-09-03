@@ -336,7 +336,58 @@ was deferred pending the maintainer's own decision on when/how to cut the
 next release, so treat §6-§8 as already present in the `0.6.2`-tagged
 source tree rather than as a `0.6.3` that doesn't exist yet.
 
-## Known pre-existing, unrelated issue (not touched)
+## 9. Fixed: `factor` (near-pair Duffy-patch radius) was dead — never reached the CPU or GPU compute path
+
+**Bug**: found while investigating a reported closure-error blowup (up to
+147%) on meshes with large/elongated boundary elements, driven from the
+`nek-vf-case` skill's `compute_view_factors.jl` CLI script. That script
+parses `--factor` and prints it in its own error-tip message, but never
+actually passes it to `compute_view_factors` — and `compute_view_factors`/
+`_compute_cpu` didn't accept a `factor` keyword at all, so every
+`patch_adjacent_pairs_duffy!` call silently used the hardcoded default of
+`3.0` regardless of what the CLI flag said. A prior investigation that
+raised `--factor` 3.0→20.0 to test whether the near-pair patch radius was
+the cause of the closure blowup therefore never actually varied it.
+
+**Root cause of the closure blowup itself**: separately confirmed (via a
+synthetic reproduction, not committed here) that `factor` was never the
+lever anyway — raising it with the plumbing bug fixed still made no
+measurable difference. The real driver is `nquad`: every element gets a
+fixed `nquad×nquad` Gauss-Legendre grid regardless of physical size
+(`ViewFactorKernel.jl`/`DuffyKernel.jl`), so when a mesh's elements grow
+large or elongated (e.g. widening a domain without scaling element count
+proportionally), a low `nquad` under-resolves the `1/r²` kernel across
+each element and closure degrades — this reproduces with pure deterministic
+quadrature (no Monte Carlo, no randomness involved), and recovers cleanly
+as `nquad` is raised (e.g. 10→20 cut closure error from ~10% to ~1.5% on a
+10:1-elongated test mesh; MC mode with `nquad=30` on the same mesh: 0.26%,
+still cheap since `nquad` there only governs the O(N) Duffy patch, not the
+O(N²) Monte Carlo bulk). Not a code change here — this is a usage/config
+finding for large-`nquad`-needing meshes, documented so it isn't
+re-diagnosed as a `factor`-plumbing issue again.
+
+**Fix**: added `factor::Float64 = 3.0` as a real keyword argument to
+`compute_view_factors` (CPU and GPU dispatch), threaded through
+`_compute_cpu` and `compute_view_factors_gpu` to their
+`patch_adjacent_pairs_duffy!` calls. `nek-vf-case`'s
+`compute_view_factors.jl` now passes `factor=factor` in its Monte Carlo
+branch (the only path that uses it — the plain-quadrature/`use_duffy`
+branch calls `element_pair_view_factor_duffy` directly per pair, not via
+`near_pairs`, so `factor` doesn't apply there).
+
+**Files**: `src/Assembly.jl` (`compute_view_factors`, `_compute_cpu`,
+`_gpu_compute_hook`, docstring), `src/GPUAssembly.jl`
+(`compute_view_factors_gpu`, docstring); outside this repo,
+`~/.claude/skills/nek-vf-case/scripts/compute_view_factors.jl`.
+**Tests**: full suite re-run after the change (`quad_test.jl`,
+`vf_test.jl`, `mesh_test.jl`, `GPU_test.jl`, `vtk_test.jl`, `re2_test.jl`,
+`duffy_correctness_test.jl` — which directly exercises
+`patch_adjacent_pairs_duffy!` — `nek_export_test.jl`,
+`obstruction_test.jl`, `type_stable_test.jl`: 274/274 passing, identical
+to a baseline run on the unmodified code aside from the one known-broken
+testset below).
+
+## Known pre-existing, unrelated issues (not touched)
 
 `test/mesh_test.jl`'s "Unstructured surface mesh end-to-end view factors"
 testset already failed before any of the above changes (`e.family ===
@@ -348,3 +399,19 @@ chain on this failure, all new/changed tests above were additionally
 verified by running `re2_test.jl`, `duffy_correctness_test.jl`,
 `nek_export_test.jl`, `obstruction_test.jl`, and `type_stable_test.jl`
 directly (230/230 passing) rather than through `Pkg.test()`.
+
+`test/ray_test.jl`'s "Full blocker leaves no leaks (CPU + GPU traversal)"
+testset's third assertion (`r.F_group[1, 2] == 0.0`) also already failed
+before any of the §9 changes above — confirmed by stashing the §9 diff and
+re-running `Pkg.test()` on the untouched tree (identical failure). Looks
+real, not a test-infrastructure issue: the test places two directly-opposed
+unit plates 1 apart, fully obstructed by a much larger blocking plane, and
+expects `F_group[1,2] == 0.0`; it gets `0.19982` instead (the exact
+unobstructed value) because the two plates are close enough to fall inside
+`near_pairs`' default `factor=3.0` radius, and `patch_adjacent_pairs_duffy!`
+does not check `obstruction_groups` for patched pairs at all — its
+docstring assumes "nearby elements at this distance scale cannot have a
+third surface positioned between them," which this test explicitly
+contradicts. Left untouched — out of scope for the `factor`-plumbing fix
+above and not something `factor` itself can address (the patch would need
+to run the same obstruction check the bulk MC pairs get).

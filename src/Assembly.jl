@@ -69,6 +69,15 @@ Assemble the full view factor matrix at element and physical-group level.
                           quadrature path. CPU only. Ignored when
                           `monte_carlo=true` (that path always Duffy-patches
                           adjacent pairs regardless of this flag).
+- `factor`              : near-pair patch radius, in element diameters (see
+                          `near_pairs` in `DuffyKernel.jl`) — only used when
+                          `monte_carlo=true`, to decide which O(N) pairs get
+                          the deterministic Duffy patch instead of the raw
+                          MC estimate. Raising it does not, by itself, make
+                          those pairs more accurate — `nquad` (above) is
+                          what governs the patch's own resolution, and is
+                          the more effective lever for closure error on
+                          meshes with large or elongated elements.
 - `verbose`             : print progress and row-sum diagnostics
 
 # Returns
@@ -92,6 +101,7 @@ function compute_view_factors(mesh               ::MeshData;
                                n_samples         ::Int          = 10000,
                                rng               ::AbstractRNG  = Random.default_rng(),
                                use_duffy         ::Bool         = false,
+                               factor            ::Float64      = 3.0,
                                verbose           ::Bool         = true)::ViewFactorResult
 
     backend isa Type && (backend = backend())
@@ -108,11 +118,12 @@ function compute_view_factors(mesh               ::MeshData;
         FloatT = _gpu_float_type(backend)
         return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                                   obstruction_groups, verbose,
-                                  monte_carlo, n_samples)
+                                  monte_carlo, n_samples, factor)
     end
 
     return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose,
-                         mesh.mesh_dim, monte_carlo, n_samples, rng, use_duffy)
+                         mesh.mesh_dim, monte_carlo, n_samples, rng, use_duffy,
+                         factor)
 end
 
 # ---------------------------------------------------------------------------
@@ -128,7 +139,8 @@ function _compute_cpu(mesh              ::MeshData,
                        monte_carlo      ::Bool        = false,
                        n_samples        ::Int         = 10000,
                        rng              ::AbstractRNG = Random.default_rng(),
-                       use_duffy        ::Bool        = false)::ViewFactorResult
+                       use_duffy        ::Bool        = false,
+                       factor           ::Float64     = 3.0)::ViewFactorResult
 
     elems  = mesh.surface_elems
     coords = mesh.coords
@@ -214,7 +226,8 @@ function _compute_cpu(mesh              ::MeshData,
         # pairs — no amount of sampling fixes this. Patch those O(N) pairs
         # with the deterministic Duffy transform (see DuffyKernel.jl).
         verbose && print("  Patching adjacent-pair singularities (Duffy)… ")
-        patch_adjacent_pairs_duffy!(raw_integral, coords, elems, nquad, mesh_dim)
+        patch_adjacent_pairs_duffy!(raw_integral, coords, elems, nquad, mesh_dim;
+                                     factor=factor)
         verbose && println("done.")
     else
         # Pre-evaluate each element's quadrature points once (O(N)) instead of
@@ -277,14 +290,16 @@ _gpu_float_type(backend) =
 const _GPU_HOOK_REF = Ref{Any}(nothing)
 
 function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
-                            obstruction_groups, verbose, monte_carlo, n_samples)
+                            obstruction_groups, verbose, monte_carlo, n_samples,
+                            factor)
     _GPU_HOOK_REF[] === nothing &&
         error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
     return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
                              obstruction_groups=obstruction_groups,
                              verbose=verbose,
                              monte_carlo=monte_carlo,
-                             n_samples=n_samples)
+                             n_samples=n_samples,
+                             factor=factor)
 end
 
 """

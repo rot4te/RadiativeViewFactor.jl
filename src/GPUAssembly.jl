@@ -29,6 +29,9 @@ GPU implementation of compute_view_factors.
 `FloatT`             — element type: `Float64` for CUDA, `Float32` for Metal.
 `ArrayT`             — device array constructor, provided by the backend extension.
 `obstruction_groups` — physical group tags whose geometry occludes rays.
+`factor`             — near-pair Duffy-patch radius, in element diameters
+                        (see `near_pairs` in `DuffyKernel.jl`); only used
+                        when `monte_carlo=true`.
 """
 function compute_view_factors_gpu(mesh               ::MeshData,
                                    nquad             ::Int,
@@ -38,7 +41,8 @@ function compute_view_factors_gpu(mesh               ::MeshData,
                                    obstruction_groups::Vector{Int} = Int[],
                                    verbose           ::Bool        = true,
                                    monte_carlo       ::Bool        = false,
-                                   n_samples         ::Int         = 10000)::ViewFactorResult
+                                   n_samples         ::Int         = 10000,
+                                   factor            ::Float64     = 3.0)::ViewFactorResult
     N = length(mesh.surface_elems)
     if verbose
         if monte_carlo
@@ -112,7 +116,7 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     if monte_carlo
         verbose && print("  Patching adjacent-pair singularities (Duffy, CPU)… ")
         patch_adjacent_pairs_duffy!(raw_f64, mesh.coords, mesh.surface_elems,
-                                     nquad, mesh.mesh_dim)
+                                     nquad, mesh.mesh_dim; factor=factor)
         verbose && println("done.")
     end
 
