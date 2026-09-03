@@ -193,6 +193,17 @@ end
 
 const _EPS = 1e-10
 
+# Barycentric edge tolerance: a ray that pierces exactly on the shared edge
+# between two coplanar triangles (e.g. the diagonal split of a quad
+# obstruction face) computes u (or v) as a tiny negative number on both
+# triangles due to floating-point rounding, so a strict `< 0.0` test rejects
+# the hit on *both* sides of the edge — a watertightness crack that silently
+# lets rays leak through supposedly opaque obstruction geometry. Accepting a
+# small negative slack on the barycentric bounds closes the crack; the bias
+# this introduces (a ray passing just outside the triangle by less than this
+# margin can register as a hit) is negligible at this scale.
+const _BARY_EPS = 1e-9
+
 """
 Return hit distance t > `t_min` if ray hits triangle, else `Inf`.
 `v0,v1,v2` are the three vertices of the triangle.
@@ -211,10 +222,10 @@ Return hit distance t > `t_min` if ray hits triangle, else `Inf`.
     f = 1.0 / a
     s = o - v0
     u = f * dot(s, h)
-    (u < 0.0 || u > 1.0) && return Inf
+    (u < -_BARY_EPS || u > 1.0 + _BARY_EPS) && return Inf
     q = cross(s, e1)
     v = f * dot(d, q)
-    (v < 0.0 || u + v > 1.0) && return Inf
+    (v < -_BARY_EPS || u + v > 1.0 + _BARY_EPS) && return Inf
     t = f * dot(e2, q)
     t > t_min ? t : Inf
 end

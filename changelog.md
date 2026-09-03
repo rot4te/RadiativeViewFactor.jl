@@ -415,3 +415,63 @@ third surface positioned between them," which this test explicitly
 contradicts. Left untouched — out of scope for the `factor`-plumbing fix
 above and not something `factor` itself can address (the patch would need
 to run the same obstruction check the bulk MC pairs get).
+
+## 10. Fixed: `test/ray_test.jl`'s "Full blocker leaves no leaks" failure — two bugs, not one
+
+Follow-up to the §9 "Known pre-existing" note above: `patch_adjacent_pairs_duffy!`
+really did skip obstruction entirely for near-pairs, and fixing only that
+uncovered a second, independent bug underneath it.
+
+**Bug 1 — `patch_adjacent_pairs_duffy!` ignored `obstruction_groups`**:
+confirmed by instrumenting `_compute_cpu`'s Monte Carlo loop — the bulk MC
+pairs correctly detected the blocking plane (`nblocked == nchecked ==
+n_samples`, raw contribution ≈0), but the near-pair Duffy patch that runs
+immediately after unconditionally overwrote `raw_integral[i,j]` with
+`element_pair_view_factor_duffy(..., nothing, mesh_dim)` — hardcoding
+`bvh = nothing` — silently restoring the full unobstructed value for any
+pair `near_pairs` flagged, regardless of `obstruction_groups`. Obstruction
+geometry lives in `mesh.group_tri_soup`, entirely outside `elems`, so
+proximity between two radiating elements never implies an unobstructed path
+between them; the docstring's claim to the contrary was wrong.
+
+**Fix 1**: factored the CPU path's inline obstruction-BVH-per-group-pair
+closure out of `_compute_cpu` into a new shared, exported
+`Assembly.build_bvh_lookup(mesh, obstruction_groups)`, and gave
+`patch_adjacent_pairs_duffy!` a `bvh_for::Function` parameter (default
+`(gi,gj)->nothing`, preserving old behavior when no obstruction is given)
+that it now calls per patched pair. Both `_compute_cpu` (CPU) and
+`GPUAssembly.compute_view_factors_gpu` (GPU — the near-pair patch always
+runs on the CPU even for a GPU backend) now build one `get_bvh` lookup and
+pass it to both the bulk pair loop and the Duffy patch, so obstruction is
+checked consistently everywhere a pair is evaluated.
+
+**Bug 2 — ray/triangle watertightness crack on shared coplanar edges**:
+fixing Bug 1 alone only reduced `F_group[1,2]` from `0.19982` to `~0.0016`,
+not to `0.0`. Root cause: the test's blocking plane is two triangles split
+along its diagonal, and the two plates' bilinear Quad4 map sends symmetric
+Gauss-Legendre node pairs (`ξ=η`) onto that same diagonal, so several
+quadrature-point ray pairs pierce the blocker *exactly* on the shared edge
+between its two triangles. Möller–Trumbore there computes `u` (or `v`) as a
+tiny negative number — e.g. `-2.1e-17` — on both triangles from floating-point
+rounding, and the strict `u < 0.0`/`v < 0.0` rejection in `_ray_triangle`
+(`src/BVH.jl`) then misses the hit on *both* sides of the edge: a classic
+watertightness gap, not specific to this test's geometry.
+
+**Fix 2**: added a small negative tolerance (`_BARY_EPS = 1e-9`, CPU;
+`_GPU_BARY_EPS = 1f-6`, GPU) to the barycentric bounds checks in
+`BVH._ray_triangle` and the matching inline test in
+`GPUBVH.gpu_intersect_bvh`, so a ray landing on (or within the tolerance of)
+a shared triangle edge registers as a hit on at least one side instead of
+neither.
+
+**Files**: `src/Assembly.jl` (new `build_bvh_lookup`, `_compute_cpu` uses
+it, passes it to `patch_adjacent_pairs_duffy!`), `src/DuffyKernel.jl`
+(`patch_adjacent_pairs_duffy!` signature + docstring), `src/GPUAssembly.jl`
+(builds and passes `get_bvh` to the Duffy patch), `src/BVH.jl`
+(`_ray_triangle` tolerance), `src/GPUBVH.jl` (`gpu_intersect_bvh`
+tolerance).
+
+**Tests**: full suite via `Pkg.test()`: all testsets passing, including
+`ray_test.jl`'s "Full blocker leaves no leaks (CPU + GPU traversal)" (now
+3/3, previously 2/3) and `duffy_correctness_test.jl` (12/12, unaffected by
+the tolerance widening).

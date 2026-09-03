@@ -14,7 +14,7 @@ import ..GPUBVH:       build_flat_bvh_from_mesh
 import ..GPUKernels:   build_gpu_arrays, launch_vf_kernel!
 import ..GPUMCKernels: launch_mc_kernel!
 import ..Results:      ViewFactorResult, _aggregate
-import ..Assembly:     register_gpu_hook!
+import ..Assembly:     register_gpu_hook!, build_bvh_lookup
 import ..DuffyKernel:  patch_adjacent_pairs_duffy!
 
 export compute_view_factors_gpu
@@ -115,8 +115,9 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     # transform, on top of whatever ran on the GPU for the O(N²) bulk.
     if monte_carlo
         verbose && print("  Patching adjacent-pair singularities (Duffy, CPU)… ")
+        get_bvh = build_bvh_lookup(mesh, obstruction_groups)
         patch_adjacent_pairs_duffy!(raw_f64, mesh.coords, mesh.surface_elems,
-                                     nquad, mesh.mesh_dim; factor=factor)
+                                     nquad, mesh.mesh_dim, get_bvh; factor=factor)
         verbose && println("done.")
     end
 

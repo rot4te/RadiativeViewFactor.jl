@@ -512,7 +512,8 @@ function near_pairs(coords::Matrix{Float64}, elems::Vector{SurfaceElement};
 end
 
 """
-    patch_adjacent_pairs_duffy!(raw, coords, elems, nquad, mesh_dim; factor=3.0)
+    patch_adjacent_pairs_duffy!(raw, coords, elems, nquad, mesh_dim,
+                                 bvh_for=(gi,gj)->nothing; factor=3.0)
 
 Overwrite `raw[i,j]` and `raw[j,i]` (the raw, pre-area-division double
 integral, symmetric in `i,j`) for every pair within `factor` element-sizes
@@ -521,21 +522,26 @@ of each other (see [`near_pairs`](@ref)) with the deterministic value from
 assembly (CPU or GPU) so those O(N) pairs get a statistically consistent
 value instead of high- or unbounded-variance samples. No-op for curve
 meshes (`mesh_dim == 1`), where Duffy doesn't apply (see
-`element_pair_view_factor_duffy`). Obstruction is not checked for these
-pairs — nearby elements at this distance scale cannot have a third surface
-positioned between them without also being flagged as obstructing the bulk
-Monte Carlo pairs via `obstruction_groups`.
+`element_pair_view_factor_duffy`).
+
+`bvh_for(group_i, group_j)` returns the obstruction `BVHTree` (or `nothing`)
+for a pair of element groups — obstruction geometry lives outside `elems`
+(e.g. a baffle group passed via `obstruction_groups`), so proximity between
+`i` and `j` alone does not imply an unobstructed path between them; the
+default no-op ignores obstruction entirely.
 """
 function patch_adjacent_pairs_duffy!(raw::Matrix{Float64},
                                       coords::Matrix{Float64},
                                       elems::Vector{SurfaceElement},
                                       nquad::Int,
-                                      mesh_dim::Int;
+                                      mesh_dim::Int,
+                                      bvh_for::Function = (gi, gj) -> nothing;
                                       factor::Float64 = 3.0)
     mesh_dim == 1 && return raw
     for (i, j) in near_pairs(coords, elems; factor=factor)
+        bvh = bvh_for(elems[i].group, elems[j].group)
         raw_ij, _ = element_pair_view_factor_duffy(coords, elems[i], elems[j],
-                                                     nquad, nothing, mesh_dim)
+                                                     nquad, bvh, mesh_dim)
         raw[i, j] = raw_ij
         raw[j, i] = raw_ij
     end

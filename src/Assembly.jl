@@ -22,7 +22,8 @@ export compute_view_factors,
        check_reciprocity,
        check_closure,
        ViewFactorResult,
-       register_gpu_hook!
+       register_gpu_hook!,
+       build_bvh_lookup
 
 """
     compute_view_factors(mesh; nquad=4, obstruction_groups=Int[],
@@ -126,31 +127,21 @@ function compute_view_factors(mesh               ::MeshData;
                          factor)
 end
 
-# ---------------------------------------------------------------------------
-# CPU path
-# ---------------------------------------------------------------------------
+"""
+    build_bvh_lookup(mesh, obstruction_groups) -> (group_i, group_j) -> Union{BVHTree,Nothing}
 
-function _compute_cpu(mesh              ::MeshData,
-                       nquad            ::Int,
-                       obstruction_groups::Vector{Int},
-                       self_vf          ::Bool,
-                       verbose          ::Bool,
-                       mesh_dim         ::Int         = 2,
-                       monte_carlo      ::Bool        = false,
-                       n_samples        ::Int         = 10000,
-                       rng              ::AbstractRNG = Random.default_rng(),
-                       use_duffy        ::Bool        = false,
-                       factor           ::Float64     = 3.0)::ViewFactorResult
-
-    elems  = mesh.surface_elems
-    coords = mesh.coords
-    N      = length(elems)
-
+Return a memoized closure mapping a pair of *radiating*-element group tags to
+the merged obstruction `BVHTree` built from every `obstruction_groups` entry
+other than `group_i`/`group_j`, or `nothing` when no obstruction geometry
+applies. Shared by the CPU and GPU assembly paths (including the near-pair
+Duffy patch) so obstruction is checked consistently everywhere a pair of
+elements is evaluated.
+"""
+function build_bvh_lookup(mesh::MeshData, obstruction_groups::Vector{Int})
     check_obs = !isempty(obstruction_groups)
-
     bvh_cache = Dict{Vector{Int}, Union{BVHTree,Nothing}}()
 
-    function get_bvh(group_i::Int, group_j::Int)::Union{BVHTree,Nothing}
+    return function get_bvh(group_i::Int, group_j::Int)::Union{BVHTree,Nothing}
         check_obs || return nothing
         active = sort(filter(g -> g != group_i && g != group_j, obstruction_groups))
         isempty(active) && return nothing
@@ -173,6 +164,30 @@ function _compute_cpu(mesh              ::MeshData,
             build_bvh(merged)
         end
     end
+end
+
+# ---------------------------------------------------------------------------
+# CPU path
+# ---------------------------------------------------------------------------
+
+function _compute_cpu(mesh              ::MeshData,
+                       nquad            ::Int,
+                       obstruction_groups::Vector{Int},
+                       self_vf          ::Bool,
+                       verbose          ::Bool,
+                       mesh_dim         ::Int         = 2,
+                       monte_carlo      ::Bool        = false,
+                       n_samples        ::Int         = 10000,
+                       rng              ::AbstractRNG = Random.default_rng(),
+                       use_duffy        ::Bool        = false,
+                       factor           ::Float64     = 3.0)::ViewFactorResult
+
+    elems  = mesh.surface_elems
+    coords = mesh.coords
+    N      = length(elems)
+
+    check_obs = !isempty(obstruction_groups)
+    get_bvh   = build_bvh_lookup(mesh, obstruction_groups)
 
     if verbose
         if monte_carlo
@@ -226,8 +241,8 @@ function _compute_cpu(mesh              ::MeshData,
         # pairs — no amount of sampling fixes this. Patch those O(N) pairs
         # with the deterministic Duffy transform (see DuffyKernel.jl).
         verbose && print("  Patching adjacent-pair singularities (Duffy)… ")
-        patch_adjacent_pairs_duffy!(raw_integral, coords, elems, nquad, mesh_dim;
-                                     factor=factor)
+        patch_adjacent_pairs_duffy!(raw_integral, coords, elems, nquad, mesh_dim,
+                                     get_bvh; factor=factor)
         verbose && println("done.")
     else
         # Pre-evaluate each element's quadrature points once (O(N)) instead of

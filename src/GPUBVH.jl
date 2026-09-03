@@ -199,6 +199,13 @@ end; export build_flat_bvh_from_mesh
 
 const _GPU_T_EPS = 1f-6   # Float32 literal; cast to T inside the function
 
+# Barycentric edge tolerance, mirroring BVH._BARY_EPS on the CPU path: a ray
+# that pierces exactly on the shared edge between two coplanar triangles
+# rounds to a tiny negative u or v on both triangles, and a strict < 0 test
+# rejects the hit on both sides — closing that watertightness crack needs a
+# small negative slack on the barycentric bounds.
+const _GPU_BARY_EPS = 1f-6   # Float32 literal; cast to T inside the function
+
 @inline function gpu_intersect_bvh(bvh_lo, bvh_hi, bvh_meta,
                                     bvh_tri_idx, bvh_tris, bvh_tri_group,
                                     ox::T, oy::T, oz::T,
@@ -210,6 +217,7 @@ const _GPU_T_EPS = 1f-6   # Float32 literal; cast to T inside the function
     inv_dy = T(1) / dy
     inv_dz = T(1) / dz
     t_eps  = T(_GPU_T_EPS)
+    b_eps  = T(_GPU_BARY_EPS)
 
     nidx = 1   # start at root
 
@@ -257,13 +265,13 @@ const _GPU_T_EPS = 1f-6   # Float32 literal; cast to T inside the function
                     f  = T(1) / a
                     sx = ox-v0x;  sy = oy-v0y;  sz = oz-v0z
                     u  = f * (sx*hx + sy*hy + sz*hz)
-                    (u < T(0) || u > T(1)) && continue
+                    (u < -b_eps || u > T(1)+b_eps) && continue
 
                     qx = sy*e1z - sz*e1y
                     qy = sz*e1x - sx*e1z
                     qz = sx*e1y - sy*e1x
                     v  = f * (dx*qx + dy*qy + dz*qz)
-                    (v < T(0) || u+v > T(1)) && continue
+                    (v < -b_eps || u+v > T(1)+b_eps) && continue
 
                     t = f * (e2x*qx + e2y*qy + e2z*qz)
                     t > t_eps && t < t_max && return true
