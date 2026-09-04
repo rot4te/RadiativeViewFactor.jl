@@ -475,3 +475,87 @@ tolerance).
 `ray_test.jl`'s "Full blocker leaves no leaks (CPU + GPU traversal)" (now
 3/3, previously 2/3) and `duffy_correctness_test.jl` (12/12, unaffected by
 the tolerance widening).
+---
+
+# 2026-09-04 — Howell catalog validation benchmark
+
+Added a benchmark suite validating the package against published closed-form
+configuration factors from J. R. Howell, *A Catalog of Radiation Heat Transfer
+Configuration Factors*, 3rd ed. (thermalradiation.net), Section C (finite area
+to finite area). No package source was changed; this is validation only.
+
+**Files added**
+
+- `benchmarks/howell/geom.jl` — Gmsh builders for the benchmark geometries
+  (parallel/perpendicular plates in 2D and 3D, coaxial disks, concentric and
+  parallel cylinder cross-sections). Normal orientation is set explicitly:
+  3D plane surfaces via node winding, 2D curves by meshing the enclosed cavity
+  so line normals are oriented inward by `load_mesh`.
+- `benchmarks/howell/analytic.jl` — the catalog's governing equations,
+  transcribed one function per case using the catalog's own variable
+  definitions (C-1, C-2, C-3, C-4, C-11, C-14, C-40, C-41, C-63, C-68, C-69).
+- `benchmarks/howell/run.jl` — driver; sweeps each formula over several
+  parameter values, compares to `compute_view_factors`, writes `results.csv`.
+- `benchmarks/howell/RESULTS.md` — method, results table, and error analysis.
+
+**Result**: 39 parameter points across 10 catalog cases all agree with the
+published values, median relative error 4.0e-7, worst 3.8e-3. Non-touching
+geometries land between machine precision and ~1e-5. Edge-sharing geometries
+are the least accurate (1e-4 to 4e-3) because of the 1/r^2 kernel singularity
+at the shared edge; enabling `use_duffy=true` improves the 3D shared-edge case
+C-14 from 3.5e-2 to 2.3e-4.
+
+**Note on catalog conventions** (both found by debugging wrong answers): the
+cylinder spacing `s` in cases C-68/C-69 is the surface-to-surface gap, not the
+axis distance; and 2D curve groups must bound a meshed surface or their normals
+are never oriented and every view factor comes back 0.
+
+Coverage is 15 of the 162 Section C entries. The catalog publishes each
+governing equation as a raster image, so each further case needs its formula
+transcribed by eye plus a bespoke geometry.
+
+## Bug fix: `reverse_normals` corrupted 2nd-order surface elements
+
+Found by this benchmark, while adding the cylinder/cone/sphere cases (the first
+3D cases needing `reverse_normals=true`).
+
+`_reverse_all_normals!` reversed element winding by swapping corner nodes but
+permuted the mid-side nodes incorrectly, leaving them attached to the wrong
+edges and silently corrupting the isoparametric map:
+
+- **Quad8** (`:quad`): swapped nodes 5 <-> 7. With corners 1-4 and mid-sides
+  5=(1,2), 6=(2,3), 7=(3,4), 8=(4,1), swapping corners 1 <-> 3 sends edge (1,2)
+  to (3,2), whose mid-side node is the old 6. Correct permutation is
+  5 <-> 6 and 7 <-> 8.
+- **Tri6** (`:tri`): swapped nodes 4 <-> 6. Correct is 4 <-> 5, with node 6
+  unchanged because edge (3,1) maps onto itself.
+
+First-order (Quad4, Tri3) and line elements were handled correctly and are
+unaffected.
+
+**Impact**: silent and severe. Any second-order surface mesh loaded with
+`reverse_normals=true` produced badly wrong view factors with no warning. On a
+closed unit cube: face areas 0.9558 instead of 1.0, and row sums 0.108 instead
+of 1.0 — view factors roughly 10x too small. Benchmark case C-79 (cylinder base
+to inside surface) went from 90% error to 2e-4 after the fix.
+
+**Files**: `src/MeshIO.jl` (`_reverse_all_normals!` and its docstring),
+`test/mesh_test.jl` (new regression testset "reverse_normals preserves
+2nd-order element geometry", checking that each mid-side node still lies at the
+midpoint of its own edge after reversal, that the winding actually flips, and
+that element area is unchanged).
+
+Full existing test suite still passes.
+
+## Benchmark extended to curved 3D bodies
+
+Added cases C-79 (cylinder base to inside lateral surface), C-109 (cone
+interior to base), C-125 (sphere to coaxial disk) and C-135 (concentric
+spheres), taking the suite to 52 parameter points over 15 catalog cases, all
+agreeing within 0.4% (median 9.3e-7).
+
+Also recorded: the Duffy correction applies only to quad pairs and silently
+skips triangles. Case C-109 shows the cost directly — the same cone geometry
+gives 3.7e-4 meshed with quads but 3.6-9.2% meshed with triangles, and
+refining the triangle mesh does not reliably help. Edge-sharing geometries
+should be meshed with quads.

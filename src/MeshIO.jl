@@ -645,9 +645,17 @@ Reverse the normal of every element by swapping the node ordering:
   - Line2  (:line2) : swap nodes 1 ↔ 2 (endpoints)
   - Line3  (:line3) : swap nodes 1 ↔ 2 (endpoints); node 3 (midpoint) unchanged
   - Quad4  (:quad4) : swap nodes 1 ↔ 3 (reverses winding)
-  - Quad8  (:quad)  : swap nodes 1 ↔ 3 and 5 ↔ 7 (reverses winding)
+  - Quad8  (:quad)  : swap nodes 1 ↔ 3, then 5 ↔ 6 and 7 ↔ 8
   - Tri3   (:tri3)  : swap nodes 1 ↔ 3 (reverses winding)
-  - Tri6   (:tri)   : swap nodes 1 ↔ 3 and 4 ↔ 6 (reverses winding)
+  - Tri6   (:tri)   : swap nodes 1 ↔ 3, then 4 ↔ 5; node 6 unchanged
+
+Second-order elements need their mid-side nodes permuted to follow the new
+corner order, or the mid-side nodes end up attached to the wrong edges and the
+isoparametric map is silently corrupted. With corners numbered 1-4 and
+mid-sides 5=(1,2), 6=(2,3), 7=(3,4), 8=(4,1), swapping corners 1 ↔ 3 sends
+edge (1,2) → (3,2), whose mid-side node is the old 6 — hence 5 ↔ 6, and
+likewise 7 ↔ 8. The Tri6 case (mid-sides 4=(1,2), 5=(2,3), 6=(3,1)) leaves
+node 6 in place because edge (3,1) maps onto itself.
 """
 function _reverse_all_normals!(surface_elems::Vector{SurfaceElement},
                                 surface_dim  ::Int)
@@ -657,12 +665,13 @@ function _reverse_all_normals!(surface_elems::Vector{SurfaceElement},
             nodes[1], nodes[2] = nodes[2], nodes[1]
         elseif el.family === :quad
             nodes[1], nodes[3] = nodes[3], nodes[1]
-            nodes[5], nodes[7] = nodes[7], nodes[5]
+            nodes[5], nodes[6] = nodes[6], nodes[5]
+            nodes[7], nodes[8] = nodes[8], nodes[7]
         elseif el.family === :quad4
             nodes[1], nodes[3] = nodes[3], nodes[1]
         elseif el.family === :tri
             nodes[1], nodes[3] = nodes[3], nodes[1]
-            nodes[4], nodes[6] = nodes[6], nodes[4]
+            nodes[4], nodes[5] = nodes[5], nodes[4]
         elseif el.family === :tri3
             nodes[1], nodes[3] = nodes[3], nodes[1]
         end

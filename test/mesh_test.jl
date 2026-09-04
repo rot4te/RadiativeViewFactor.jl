@@ -129,3 +129,58 @@ end
 
   foreach(rm, (f1, f2))
 end
+
+# ---------------------------------------------------------------------------
+# Regression: reversing the normal of a 2nd-order element must permute its
+# mid-side nodes to follow the new corner order. Swapping corners alone leaves
+# mid-side nodes attached to the wrong edges, which silently corrupts the
+# isoparametric map: areas come out wrong and view factors are ~10x too small.
+# ---------------------------------------------------------------------------
+@testset "reverse_normals preserves 2nd-order element geometry" begin
+  rev! = RadiativeViewFactor.MeshIO._reverse_all_normals!
+
+  # Quad8 unit square: corners 1-4 CCW, mid-sides 5=(1,2) 6=(2,3) 7=(3,4) 8=(4,1)
+  qcoords = [0.0 1.0 1.0 0.0 0.5 1.0 0.5 0.0;
+             0.0 0.0 1.0 1.0 0.0 0.5 1.0 0.5;
+             0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0]
+  qel = [SurfaceElement(collect(1:8), 1, :quad)]
+  rev!(qel, 2)
+  n = qel[1].nodes
+  # every mid-side node must still sit at the midpoint of its own edge
+  for k in 1:4
+    c1 = qcoords[:, n[k]]
+    c2 = qcoords[:, n[mod1(k + 1, 4)]]
+    mid = qcoords[:, n[4 + k]]
+    @test isapprox(mid, (c1 + c2) / 2; atol=1e-14)
+  end
+  # winding is reversed, so the right-hand-rule normal flips
+  a = qcoords[:, n[2]] - qcoords[:, n[1]]
+  b = qcoords[:, n[4]] - qcoords[:, n[1]]
+  @test cross(a, b)[3] < 0
+
+  # area must be unchanged by the reversal
+  area(el) = begin
+    s = 0.0
+    gp = (-sqrt(3 / 5), 0.0, sqrt(3 / 5)); gw = (5 / 9, 8 / 9, 5 / 9)
+    for i in 1:3, j in 1:3
+      _, J = quad8_normal_and_area_element(qcoords, el.nodes, gp[i], gp[j])
+      s += gw[i] * gw[j] * J
+    end
+    s
+  end
+  @test isapprox(area(qel[1]), 1.0; atol=1e-12)
+
+  # Tri6: corners 1-3, mid-sides 4=(1,2) 5=(2,3) 6=(3,1)
+  tcoords = [0.0 1.0 0.0 0.5 0.5 0.0;
+             0.0 0.0 1.0 0.0 0.5 0.5;
+             0.0 0.0 0.0 0.0 0.0 0.0]
+  tel = [SurfaceElement(collect(1:6), 1, :tri)]
+  rev!(tel, 2)
+  tn = tel[1].nodes
+  for k in 1:3
+    c1 = tcoords[:, tn[k]]
+    c2 = tcoords[:, tn[mod1(k + 1, 3)]]
+    mid = tcoords[:, tn[3 + k]]
+    @test isapprox(mid, (c1 + c2) / 2; atol=1e-14)
+  end
+end
