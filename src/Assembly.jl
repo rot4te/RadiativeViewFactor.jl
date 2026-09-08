@@ -140,11 +140,17 @@ elements is evaluated.
 function build_bvh_lookup(mesh::MeshData, obstruction_groups::Vector{Int})
     check_obs = !isempty(obstruction_groups)
     bvh_cache = Dict{Vector{Int}, Union{BVHTree,Nothing}}()
+    # The assembly loop is threaded and a Julia Dict is not thread-safe: two
+    # threads inserting distinct keys can rehash concurrently and corrupt it.
+    # Distinct keys are numerous (one per pair of radiating groups), so this is
+    # reached often; guard it the same way Quadrature memoises its rules.
+    cache_lock = ReentrantLock()
 
     return function get_bvh(group_i::Int, group_j::Int)::Union{BVHTree,Nothing}
         check_obs || return nothing
         active = sort(filter(g -> g != group_i && g != group_j, obstruction_groups))
         isempty(active) && return nothing
+        lock(cache_lock) do
         get!(bvh_cache, active) do
             soups = [mesh.group_tri_soup[g]
                      for g in active if haskey(mesh.group_tri_soup, g)]
@@ -162,6 +168,7 @@ function build_bvh_lookup(mesh::MeshData, obstruction_groups::Vector{Int})
                 t += nt
             end
             build_bvh(merged)
+        end
         end
     end
 end
