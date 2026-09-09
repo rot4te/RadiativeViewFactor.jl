@@ -559,3 +559,129 @@ skips triangles. Case C-109 shows the cost directly — the same cone geometry
 gives 3.7e-4 meshed with quads but 3.6-9.2% meshed with triangles, and
 refining the triangle mesh does not reliably help. Edge-sharing geometries
 should be meshed with quads.
+
+## Bug fix: obstruction BVH cache was not thread-safe
+
+Found while adding the cylinder-array cases below (C-72, C-73), which each
+need up to 25 obstruction groups and reproducibly hit:
+
+```
+AssertionError: Multiple concurrent writes to Dict detected!
+```
+
+`build_bvh_lookup` in `src/Assembly.jl` memoises the merged obstruction
+geometry per distinct set of active groups in a plain `Dict`, filled with
+`get!` from inside the threaded assembly loop. A Julia `Dict` is not
+thread-safe: two threads inserting distinct keys can trigger a concurrent
+rehash and corrupt it. Every case in this suite prior to the arrays used at
+most 2-3 obstruction groups, so the cache filled within the first few pairs
+and the race window was rarely hit in practice; dozens of groups reproduces it
+reliably.
+
+Fixed by guarding the cache with a `ReentrantLock`, matching the pattern
+already used for the Golub-Welsch quadrature-rule cache in
+`src/Quadrature.jl` (`_GL_LOCK`). **Files**: `src/Assembly.jl`
+(`build_bvh_lookup`).
+
+## Benchmark extended to tabulated-reference cases
+
+Added seven cases whose reference values come from the catalog's own
+published tables rather than a closed-form equation — C-8 (plane to two rows
+of tubes), C-10 (rectangle to a semi-infinite rectangle at an angle), C-33
+(hexagonal prism, 6 face-pair view factors), C-34 (parallel regular polygons,
+n=3 to 8), C-72/C-73 (a cylinder in a square/triangular array, with real
+multi-body obstruction), and C-137 (two spheres of unequal radius) — taking
+the suite to 115 parameter points over 22 catalog cases, 109/115 (95%) within
+1%, median 3.0e-5.
+
+The reference values themselves are extracted programmatically from the
+catalog's page HTML into `tables.jl` rather than transcribed by eye, and
+cross-checked against closure identities each geometry must satisfy (e.g.
+C-33's six view factors from one hexagon wall sum to 1) before being trusted.
+
+Findings from this batch:
+
+- **A group can't obstruct a pair involving itself.** C-8's tube rows and the
+  cylinder arrays only shadow correctly once every individual tube/cylinder is
+  its own obstruction group — grouping a whole row together silently disabled
+  tube-on-tube shadowing and inflated the computed factor. This is documented
+  in `RESULTS.md` note 3, since it's an easy trap for anyone building a
+  multi-body obstruction case.
+- **Obstruction accuracy is limited by facet count.** A curved blocker's
+  obstruction soup uses only element corner nodes, so it's really an
+  inscribed polygon, slightly smaller than the true body. C-8's second tube
+  row (partially shadowed by the front row) converges steadily as the circle
+  facet count increases (40 -> 320 segments takes it from 0.2023 to 0.1957
+  against the catalog's 0.1953) but needs real refinement, not just a finer
+  quadrature rule.
+- **A "semi-infinite" plate needs a graded mesh.** Representing an infinite
+  rectangle with a finite one of width `W`, meshed uniformly, leaves huge
+  aspect-ratio elements once `W` exceeds a few times the near-field scale, and
+  the view factor stops converging as `W` grows further. C-10's builder grades
+  the far plate's mesh instead.
+
+Two further tabulated cases were attempted and **not included**, both
+because the published figure is genuinely ambiguous about which surface is
+meant, and no reading tried reproduced the table (see `RESULTS.md` for the
+specific configurations tried and their results):
+
+- **C-154** (two hemispheres in contact): four candidate orientations tried,
+  errors 39-83%, two of them producing a self-view-factor exceeding 1 (a
+  physical impossibility, indicating those geometries aren't what the source
+  intends).
+- **C-35** (rectangle to one quarter of a parallel cylinder): four candidate
+  90° arcs tried, errors 60-83%, one producing an exact 0.
+
+Two more tabulated cases were reviewed and set aside as poor fits for this
+kind of validation rather than attempted: C-13c publishes a Monte Carlo
+result for a specific "W-shaped tube" cross-section with no geometry given on
+the page; C-101 turns out to need raster equation images in addition to its
+table, putting it with the equation-based cases rather than this batch. A
+twelfth candidate, C-113 (cone frustum to base disk), was left for a future
+pass — its table's exponent formatting needs cleanup and it has three
+independent geometric parameters rather than two.
+
+# 2026-09-09 — Benchmark extended to the Monte Carlo kernel
+
+Every case in `benchmarks/howell/` now runs with both solver kernels —
+deterministic quadrature and `monte_carlo=true` stratified sampling — on the
+same mesh, so the comparison isolates the kernel rather than mixing in a
+discretization difference. Quadrature: 109/115 (95%) within 1% of the
+catalog value, median 0.005%. Monte Carlo (`n_samples=5000`): 110/115 (96%)
+within 1%, median 0.007% — MC tracks quadrature closely rather than adding a
+materially larger error band, including on the edge-sharing cases, where
+`compute_view_factors` always Duffy-patches near/touching pairs regardless of
+kernel (per its own docstring), so MC's worst-case error there matches
+quadrature's almost exactly.
+
+## Practical finding: Monte Carlo cost scales as 1/msz⁴, not 1/msz²
+
+Adding the MC comparison first ran into a multi-hour stall: with the
+original sphere meshes and `n_samples=10000`, C-135 (concentric spheres) and
+C-125 (sphere to disk) each took 60-80 minutes for 3-4 parameter points,
+against a few minutes for the whole 115-point suite under quadrature alone.
+
+Two independent scalings compound. Element count `N` for a fixed-size body
+scales as `1/msz²` (`msz` = target mesh element size). Monte Carlo's bulk
+cost is `O(N²)` pairs `× n_samples` per pair. Halving `msz` doesn't double
+the cost — it quadruples `N`, so pair count goes up 16x — meaning total MC
+cost scales as `1/msz⁴`. The sphere builders' original `msz = radius/5` to
+`radius/8` produced meshes fine for quadrature (nquad=6 is 36 points/pair)
+but, at `n_samples=10000` (278x more points/pair), made the O(N²) pair count
+the entire problem.
+
+Fixed by coarsening the three sphere builders (`concentric_spheres`,
+`sphere_to_disk`, `two_spheres` in `benchmarks/howell/geom.jl`) — roughly
+doubling `msz`, cutting pair count ~16x alone — combined with dropping
+`MC_SAMPLES` from 10000 to 5000 (2x). C-135 and C-125 dropped to 2.5 and 4.3
+minutes; the full 230-point suite (115 points x 2 kernels) now completes in
+about 2 hours. This did cost some quadrature accuracy on the same, now
+coarser, mesh (C-125's worst case: 2.9e-4% to 4.8e-3%; C-135's: 1.7e-3% to
+0.027%) — both still far under the 1% threshold, so the trade holds, but the
+underlying lesson (a mesh sized for quadrature isn't automatically reasonable
+for MC at a given `n_samples`) applies to any future case.
+
+**Files**: `benchmarks/howell/run.jl` (kernel loop, `MC_SAMPLES`, per-kernel
+CSV/summary output), `benchmarks/howell/geom.jl` (sphere mesh sizing),
+`benchmarks/howell/RESULTS.md` (full quad-vs-MC comparison table and this
+finding, written up in more detail there).
