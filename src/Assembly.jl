@@ -6,7 +6,7 @@ using SparseArrays
 using KernelAbstractions
 using Random
 
-import ..MeshIO:           MeshData, SurfaceElement
+import ..MeshIO:           MeshData, SurfaceElement, restrict_to_radiating
 import ..Quadrature:       gauss_legendre_2d
 import ..BVH:              BVHTree, build_bvh
 import ..ViewFactorKernel: element_pair_view_factor, precompute_quad, ElementQuad
@@ -14,6 +14,7 @@ import ..MCKernel:         element_pair_view_factor_mc, sample_element_mc,
                            ElementSamples
 import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type,
                            patch_adjacent_pairs_duffy!
+import ..ElementBounds:    ElementBound, build_element_bounds, pair_can_see
 import ..Results:          ViewFactorResult, _aggregate, aggregate_by_group,
                            check_reciprocity, check_closure
 
@@ -27,15 +28,21 @@ export compute_view_factors,
 
 """
     compute_view_factors(mesh; nquad=4, obstruction_groups=Int[],
-                         backend=CPU(), self_vf=false, verbose=true)
+                         radiating_groups=Int[], backend=CPU(),
+                         self_vf=false, facing_cull=true, verbose=true)
                          -> ViewFactorResult
 
 Assemble the full view factor matrix at element and physical-group level.
 
 # Arguments
 - `mesh`                : `MeshData` returned by `load_mesh`
-- `nquad`               : Gauss points per direction; `nquad²` points per surface
-                          element pair, `nquad` per curve element pair. When
+- `nquad`               : Gauss points per direction; `nquad²` points on each
+                          surface element (`nquad` on each curve element), so
+                          the pair integral costs `nquad⁴` point-pairs per
+                          surface element pair (`nquad²` per curve pair) —
+                          256 point-pairs at the default `nquad=4`. Compare
+                          `n_samples` below, which counts point-pairs directly.
+                          When
                           `monte_carlo=true`, only used for the adjacent-pair
                           Duffy patch (see `monte_carlo` below), not the bulk
                           sampling.
@@ -44,6 +51,23 @@ Assemble the full view factor matrix at element and physical-group level.
                           Not applied to the Monte Carlo adjacent-pair patch —
                           two elements sharing a vertex/edge cannot have a
                           third surface positioned between them.
+- `radiating_groups`    : restrict the *radiating* surface to these physical
+                          group tags; every other group still obstructs (if
+                          listed in `obstruction_groups`) but is not itself
+                          assembled. Empty (default) means every group radiates,
+                          the previous behaviour. Because assembly is dense over
+                          whatever it is handed, this turns an `O(N_total²)`
+                          problem into `O(N_radiating²)`: asking for one pair of
+                          surfaces in a mesh full of shadowing bodies no longer
+                          computes the view factors *between* those shadowing
+                          bodies. On a reactor fuel-assembly slice, `FA_wall →
+                          Pin_11` with 19 shadowing pins loaded drops from 18400
+                          radiating elements to 3040 — 37x fewer pairs.
+                          The returned `F_group` covers only the radiating
+                          groups. **The enclosure is deliberately open, so row
+                          sums no longer approach 1 and `check_closure` is not
+                          meaningful**; reciprocity is unaffected. See
+                          [`restrict_to_radiating`](@ref).
 - `backend`             : `CPU()` (default), `CUDABackend()`, or `MetalBackend()`
 - `self_vf`             : include self view factors (concave elements). CPU only.
 - `monte_carlo`         : use stratified Monte Carlo area-sampling instead of
@@ -61,6 +85,15 @@ Assemble the full view factor matrix at element and physical-group level.
 - `n_samples`           : MC sample pairs **per element pair**. Ignored when
                           `monte_carlo=false`. Variance decreases as O(1/N)
                           for the (non-adjacent) pairs Monte Carlo handles.
+                          This counts point-pairs directly, so it is `nquad⁴`
+                          — not `nquad²` — that it should be compared against:
+                          `n_samples=5000` does ~20x the kernel evaluations of
+                          the default `nquad=4`, and with `obstruction_groups`
+                          set, ~20x the BVH ray casts, since both paths ray-cast
+                          once per kernel-positive point-pair. On CPU that made
+                          a 4320-element obstructed case take 1368 s at
+                          `n_samples=5000` versus 60 s at `nquad=4`, for
+                          answers agreeing to 5 decimals.
 - `rng`                 : RNG for the CPU MC path. Pass a seeded RNG (e.g.
                           `MersenneTwister(42)`) for reproducible results.
                           Ignored on GPU.
@@ -79,6 +112,20 @@ Assemble the full view factor matrix at element and physical-group level.
                           what governs the patch's own resolution, and is
                           the more effective lever for closure error on
                           meshes with large or elongated elements.
+- `facing_cull`         : reject element pairs that provably cannot see each
+                          other before integrating them (default `true`). Each
+                          element gets a conservative bounding box for its points
+                          and another for its normals (O(N)); a pair whose kernel
+                          is then provably zero at every point pair is skipped
+                          in O(1) instead of
+                          being discovered zero one quadrature point — or one
+                          MC sample, or one BVH ray cast — at a time. Results
+                          are unchanged; on closed convex bodies (tube bundles,
+                          pebble beds) most pairs face away and this is a large
+                          saving. Set `false` to disable, e.g. for a mesh whose
+                          2nd-order elements are curved sharply enough that the
+                          sampled bounds might not contain them (see
+                          `ElementBounds`).
 - `verbose`             : print progress and row-sum diagnostics
 
 # Returns
@@ -91,11 +138,18 @@ result = compute_view_factors(mesh; nquad=6, use_duffy=true)
 result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000)               # CPU
 result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000,
                                backend=CUDABackend())                                 # GPU — fastest for large meshes
+
+# Just one pair of surfaces, with everything else still shadowing them:
+all_tags = collect(keys(mesh.group_tags))
+result = compute_view_factors(mesh; nquad=4,
+                               radiating_groups   = [wall_tag, pin_tag],
+                               obstruction_groups = all_tags)
 ```
 """
 function compute_view_factors(mesh               ::MeshData;
                                nquad             ::Int          = 4,
                                obstruction_groups::Vector{Int}  = Int[],
+                               radiating_groups  ::Vector{Int}  = Int[],
                                backend                          = CPU(),
                                self_vf           ::Bool         = false,
                                monte_carlo       ::Bool         = false,
@@ -103,9 +157,26 @@ function compute_view_factors(mesh               ::MeshData;
                                rng               ::AbstractRNG  = Random.default_rng(),
                                use_duffy         ::Bool         = false,
                                factor            ::Float64      = 3.0,
+                               facing_cull       ::Bool         = true,
                                verbose           ::Bool         = true)::ViewFactorResult
 
     backend isa Type && (backend = backend())
+
+    # Restrict the radiating surface before anything else: every path below
+    # assembles a dense matrix over `mesh.surface_elems`, so this is what makes
+    # the cost O(N_radiating²) rather than O(N_total²). Obstruction geometry is
+    # carried over in full, so occlusion is unaffected.
+    if !isempty(radiating_groups)
+        n_before  = length(mesh.surface_elems)
+        n_groups  = length(mesh.group_tags)
+        mesh      = restrict_to_radiating(mesh, radiating_groups)
+        n_after   = length(mesh.surface_elems)
+        verbose && println("  Radiating subset: $n_after of $n_before elements, ",
+                           "$(length(mesh.group_tags)) of $n_groups groups ",
+                           "— pair count reduced ",
+                           "$(round((n_before/n_after)^2, digits=1))x. ",
+                           "The enclosure is now open, so row sums will not close to 1.")
+    end
 
     use_duffy && !monte_carlo && !(backend isa CPU) &&
         @warn "use_duffy is CPU-only; ignored for GPU backends."
@@ -119,12 +190,12 @@ function compute_view_factors(mesh               ::MeshData;
         FloatT = _gpu_float_type(backend)
         return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                                   obstruction_groups, verbose,
-                                  monte_carlo, n_samples, factor)
+                                  monte_carlo, n_samples, factor, facing_cull)
     end
 
     return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose,
                          mesh.mesh_dim, monte_carlo, n_samples, rng, use_duffy,
-                         factor)
+                         factor, facing_cull)
 end
 
 """
@@ -187,7 +258,8 @@ function _compute_cpu(mesh              ::MeshData,
                        n_samples        ::Int         = 10000,
                        rng              ::AbstractRNG = Random.default_rng(),
                        use_duffy        ::Bool        = false,
-                       factor           ::Float64     = 3.0)::ViewFactorResult
+                       factor           ::Float64     = 3.0,
+                       facing_cull      ::Bool        = true)::ViewFactorResult
 
     elems  = mesh.surface_elems
     coords = mesh.coords
@@ -195,6 +267,11 @@ function _compute_cpu(mesh              ::MeshData,
 
     check_obs = !isempty(obstruction_groups)
     get_bvh   = build_bvh_lookup(mesh, obstruction_groups)
+
+    # Conservative sphere + normal-cone bounds, used to reject pairs whose
+    # kernel is provably zero everywhere before any integration. O(N).
+    bounds = facing_cull ? build_element_bounds(coords, elems) : ElementBound[]
+    n_culled = Threads.Atomic{Int}(0)
 
     if verbose
         if monte_carlo
@@ -229,7 +306,14 @@ function _compute_cpu(mesh              ::MeshData,
             gi      = elems[i].group
             si      = samples[i]
             j_start = self_vf ? i : i + 1
+            ncull_i = 0
             for j in j_start:N
+                # Provably zero kernel over the whole pair — leave both
+                # entries at their initialised 0.0 and skip the sampling.
+                if facing_cull && j != i && !pair_can_see(bounds[i], bounds[j])
+                    ncull_i += 1
+                    continue
+                end
                 gj    = elems[j].group
                 bvh   = get_bvh(gi, gj)
                 # Diagonal self-pair needs an independent second sample set,
@@ -242,6 +326,7 @@ function _compute_cpu(mesh              ::MeshData,
                 raw_integral[i, j] = integ
                 raw_integral[j, i] = integ
             end
+            Threads.atomic_add!(n_culled, ncull_i)
             verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
         end
         # The 1/r² kernel has unbounded variance for vertex/edge-adjacent
@@ -263,7 +348,14 @@ function _compute_cpu(mesh              ::MeshData,
             gi      = elems[i].group
             qi      = quads[i]
             j_start = self_vf ? i : i + 1
+            ncull_i = 0
             for j in j_start:N
+                # Provably zero kernel over the whole pair — leave both
+                # entries at their initialised 0.0 and skip the integration.
+                if facing_cull && j != i && !pair_can_see(bounds[i], bounds[j])
+                    ncull_i += 1
+                    continue
+                end
                 gj  = elems[j].group
                 bvh = get_bvh(gi, gj)
                 integ, _ = if use_duffy
@@ -275,8 +367,16 @@ function _compute_cpu(mesh              ::MeshData,
                 raw_integral[i, j] = integ
                 raw_integral[j, i] = integ
             end
+            Threads.atomic_add!(n_culled, ncull_i)
             verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
         end
+    end
+
+    if verbose && facing_cull
+        total_pairs = self_vf ? N*(N+1)÷2 : N*(N-1)÷2
+        pct = 100 * n_culled[] / max(total_pairs, 1)
+        println("  Facing cull: skipped $(n_culled[]) of $total_pairs pairs ",
+                "($(round(pct, digits=1))%) as provably non-facing.")
     end
 
     F_elem = raw_integral ./ reshape(A_elem, N, 1)
@@ -313,7 +413,7 @@ const _GPU_HOOK_REF = Ref{Any}(nothing)
 
 function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                             obstruction_groups, verbose, monte_carlo, n_samples,
-                            factor)
+                            factor, facing_cull)
     _GPU_HOOK_REF[] === nothing &&
         error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
     return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
@@ -321,7 +421,8 @@ function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                              verbose=verbose,
                              monte_carlo=monte_carlo,
                              n_samples=n_samples,
-                             factor=factor)
+                             factor=factor,
+                             facing_cull=facing_cull)
 end
 
 """

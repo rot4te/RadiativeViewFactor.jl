@@ -30,8 +30,9 @@ before/after tables live in the `benchmarks/` directory (`benchmarks/RESULTS.md`
 
 ## Choosing `nquad`
 
-For well-separated elements, `nquad=4` (16 quadrature points per element pair)
-is a good default. Increase `nquad` when:
+For well-separated elements, `nquad=4` is a good default — `nquad²` = 16
+quadrature points on *each* element, hence `nquad⁴` = 256 point-pairs per
+element pair. Increase `nquad` when:
 
 - Elements are large relative to their separation distance
 - You need sub-percent accuracy on individual element-pair values

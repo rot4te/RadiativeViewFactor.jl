@@ -15,8 +15,9 @@ The double surface integral is evaluated at a tensor product of `nquad` ×
 and is appropriate for most geometries.
 
 **Convergence:** spectral — errors decrease as O(exp(-c·nquad)) for smooth
-integrands. A good starting point is `nquad=4` (16 points per element pair);
-increase to `nquad=6` or `nquad=8` for finer accuracy or larger elements.
+integrands. A good starting point is `nquad=4` — that is `nquad²` = 16 points
+on *each* element, so `nquad⁴` = 256 point-pairs per element pair; increase to
+`nquad=6` or `nquad=8` for finer accuracy or larger elements.
 
 **Limitations:** convergence degrades near corner singularities where two
 elements share a vertex or edge. In these cases use the Duffy transformation.
@@ -70,10 +71,22 @@ correlated. This reuse is what makes the MC path ~12–15× faster than
 re-sampling both elements per pair — see the `benchmarks/` directory.
 
 **When to use:**
-- Many obstructions (MC pays the BVH cost only for kernel-positive pairs)
 - Near-singular pairs where MC variance is still finite (unlike the `1/r²`
   case where variance diverges — use Duffy instead)
 - Rapid approximate estimates at low `n_samples`
+- Very large meshes on GPU, where the O(N²) bulk parallelizes well
+
+**Not** for obstructed geometries, despite the intuition that MC should win
+there. Both paths apply the identical `K == 0` guard before calling
+`is_visible`, so both ray-cast exactly once per kernel-positive point-pair —
+MC has no structural advantage. It simply evaluates more point-pairs:
+`n_samples` versus `nquad⁴` (256 at the default `nquad=4`), so `n_samples=5000`
+issues ~20x the ray casts. Measured on a 4320-element obstructed reactor-pin
+case, CPU: 1368 s at `n_samples=5000` versus 60 s at `nquad=4`, with the two
+answers agreeing to five decimals (F = 0.380439 vs 0.380440). The GPU backend
+does not rescue this — the per-sample BVH traversal is branch-divergent, and
+the same case extrapolated to ~51 min on an M3 versus 22.8 min on 8 CPU
+threads.
 
 **Reproducibility:** pass an explicit RNG for deterministic results:
 
@@ -97,6 +110,7 @@ a random global seed is generated on the host at each call.
 |---|---|
 | Smooth geometry, well-separated surfaces | Quadrature (`nquad=4`–`8`) |
 | Inclined plates with shared edge | Duffy (`nquad=4`–`6`) |
-| Many obstructions | Monte Carlo (`n_samples=50000`+) |
+| Many obstructions | Quadrature (`nquad=4`–`6`) — see above |
 | Quick estimate | Monte Carlo (`n_samples=5000`) |
+| Very large mesh on GPU | Monte Carlo |
 | GPU computation | Quadrature or Monte Carlo |

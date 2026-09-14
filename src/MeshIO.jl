@@ -1036,6 +1036,70 @@ function _re2_build_mesh(corners::Array{Float64,3},
 end
 
 """
+    restrict_to_radiating(mesh::MeshData, radiating_groups::Vector{Int}) -> MeshData
+
+Return a `MeshData` whose *radiating* surface is only the elements of
+`radiating_groups`, while **every** original group is retained as obstruction
+geometry.
+
+This is the lever for "I want one pair of surfaces, not the whole enclosure".
+`compute_view_factors` assembles a dense matrix over every element it is given,
+so loading a pin plus the two dozen pins that might shadow it costs
+`O(N_total²)` — and most of that work computes view factors between shadowing
+bodies that were never asked for. Restricting the radiating set first makes the
+cost `O(N_radiating²)` while leaving occlusion exactly as accurate, because
+`group_tri_soup` — the only thing the obstruction BVH reads — is carried over
+whole.
+
+For a reactor fuel-assembly slice, computing `FA_wall → Pin_11` with 19
+shadowing pins loaded drops from 18400 radiating elements to 3040, a factor of
+37 in pair count.
+
+Fields are rebuilt as follows: `coords` and `group_tri_soup` are shared with the
+original (all groups, so obstruction is unchanged); `surface_elems` keeps only
+the radiating elements; `group_tags` and `group_elems` are restricted to the
+radiating groups and renumbered to the new element indices.
+
+!!! warning "Row sums no longer close"
+    View factors are still correct individually, but the enclosure is
+    deliberately incomplete, so `Σⱼ Fᵢⱼ < 1` and [`check_closure`](@ref) is not
+    meaningful on the result. Reciprocity is unaffected and still holds.
+
+```julia
+mesh = load_mesh("assembly.msh")
+r = compute_view_factors(mesh;
+                         radiating_groups   = [tag_wall, tag_pin11],
+                         obstruction_groups = collect(keys(mesh.group_tags)))
+```
+"""
+function restrict_to_radiating(mesh::MeshData,
+                                radiating_groups::Vector{Int})::MeshData
+    isempty(radiating_groups) && return mesh
+    keep = Set(radiating_groups)
+    unknown = setdiff(keep, keys(mesh.group_tags))
+    isempty(unknown) ||
+        error("radiating_groups contains unknown physical group tag(s): " *
+              "$(sort(collect(unknown))). Known tags: $(sort(collect(keys(mesh.group_tags)))).")
+
+    new_elems = SurfaceElement[]
+    new_group_elems = Dict{Int,Vector{Int}}(t => Int[] for t in radiating_groups)
+    for el in mesh.surface_elems
+        el.group in keep || continue
+        push!(new_elems, el)
+        push!(new_group_elems[el.group], length(new_elems))
+    end
+    isempty(new_elems) &&
+        error("radiating_groups selected no elements (tags $(sort(collect(keep)))).")
+
+    new_tags = Dict{Int,String}(t => mesh.group_tags[t] for t in radiating_groups)
+    # group_tri_soup is deliberately passed through in full: obstruction must
+    # still be able to see every body, radiating or not.
+    return MeshData(mesh.coords, new_elems, new_tags, new_group_elems,
+                    mesh.group_tri_soup, mesh.mesh_dim)
+end
+export restrict_to_radiating
+
+"""
     split_groups_by_tag(mesh::MeshData) -> MeshData
 
 Return a new `MeshData` with `group`/`group_tags`/`group_elems`/

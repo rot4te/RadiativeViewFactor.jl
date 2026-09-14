@@ -42,7 +42,8 @@ function compute_view_factors_gpu(mesh               ::MeshData,
                                    verbose           ::Bool        = true,
                                    monte_carlo       ::Bool        = false,
                                    n_samples         ::Int         = 10000,
-                                   factor            ::Float64     = 3.0)::ViewFactorResult
+                                   factor            ::Float64     = 3.0,
+                                   facing_cull       ::Bool        = true)::ViewFactorResult
     N = length(mesh.surface_elems)
     if verbose
         if monte_carlo
@@ -79,9 +80,11 @@ function compute_view_factors_gpu(mesh               ::MeshData,
                                                n_samples=n_samples,
                                                seed=seed,
                                                flat_bvh=flat_bvh,
+                                               facing_cull=facing_cull,
                                                verbose=verbose)
     else
-        raw_dev, area_dev = launch_vf_kernel!(ga, backend; flat_bvh=flat_bvh)
+        raw_dev, area_dev = launch_vf_kernel!(ga, backend; flat_bvh=flat_bvh,
+                                               facing_cull=facing_cull)
     end
     verbose && println("  …kernel done.")
 

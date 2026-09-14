@@ -284,6 +284,19 @@ product domain and bias the estimate.  Instead, each sample of `si` is paired
 with a uniformly random sample of `sj` (drawn from `rng`): a random stratum
 plus its stratified jitter is exactly uniform on the element, so every pair
 term is unbiased while xᵢ keeps its stratification.
+
+!!! note "The random index is deliberate, not an oversight"
+    Indexing `sj` randomly is the dominant cost of this loop: it reads
+    `sj`'s arrays out of order, which defeats prefetching and is ~2.2x
+    slower at `n_samples=5000` than walking both arrays sequentially
+    (52.7 → 23.2 µs per pair, measured).  Replacing it with a single random
+    cyclic offset per pair is equally unbiased and recovers that 2.2x, but
+    leaves only **one** random degree of freedom per pair instead of `n`:
+    the terms then move coherently with the offset instead of averaging
+    down, and the measured per-pair standard deviation rises ~30x
+    (7.5e-6 → 2.4e-4 over 40 seeds on a reactor-pin Quad8 pair).  Recovering
+    that accuracy would need far more samples than the 2.2x saved.  Keep the
+    per-sample draw.
 """
 function element_pair_view_factor_mc(si      ::ElementSamples,
                                       sj      ::ElementSamples,
@@ -302,6 +315,10 @@ function element_pair_view_factor_mc(si      ::ElementSamples,
         # Pair the k-th (stratified) sample of element i with a uniformly
         # random sample of element j — uniform over the pre-drawn set is
         # exactly uniform on the element.
+        # Do NOT replace this with a single per-pair cyclic offset to get
+        # sequential reads: that is unbiased and ~2.2x faster, but leaves one
+        # degree of randomness per pair instead of n, so the terms move
+        # coherently and per-pair sd rises ~30x (7.5e-6 → 2.4e-4, measured).
         kj = rand(rng, 1:n)
 
         xi = xs_i[k];  ni = ns_i[k];  dAi = dAs_i[k]

@@ -9,6 +9,7 @@ using KernelAbstractions
 include("MeshIO.jl")
 include("Quadrature.jl")
 include("Geometry.jl")
+include("ElementBounds.jl")  # conservative per-element sphere + normal cone
 include("BVH.jl")
 include("RayCast.jl")
 include("ViewFactorKernel.jl")
@@ -25,11 +26,13 @@ include("GPUAssembly.jl")   # imports Results + Assembly.register_gpu_hook!;
 
 using .MeshIO:    load_mesh, load_re2, MeshData
 using .MeshIO:    SurfaceElement
-using .MeshIO:    split_groups_by_tag
+using .MeshIO:    split_groups_by_tag, restrict_to_radiating
 using .Geometry:  quad8_physical_point, quad8_normal_and_area_element,
                   quad4_shape, quad4_physical_point, quad4_normal_and_area_element,
                   line2_shape, line2_physical_point, line2_normal_and_length_element,
                   line3_physical_point, line3_normal_and_length_element
+using .ElementBounds: ElementBound, build_element_bound, build_element_bounds,
+                      pair_can_see
 using .Results:   ViewFactorResult, aggregate_by_group,
                   check_reciprocity, check_closure
 using .Assembly:  compute_view_factors
@@ -46,6 +49,7 @@ export load_mesh,
        MeshData,
        SurfaceElement,
        split_groups_by_tag,
+       restrict_to_radiating,
        ViewFactorResult,
        quad8_physical_point,
        quad8_normal_and_area_element,

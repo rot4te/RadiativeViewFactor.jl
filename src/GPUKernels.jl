@@ -41,8 +41,57 @@ using LinearAlgebra: cross, dot
 
 import ..GPUBVH: gpu_intersect_bvh, FlatBVH
 import ..Quadrature: gauss_legendre_2d
+import ..ElementBounds: build_element_bounds
 
-export build_gpu_arrays, launch_vf_kernel!
+export build_gpu_arrays, launch_vf_kernel!, gpu_pair_can_see
+
+# ---------------------------------------------------------------------------
+# Conservative facing test, device side.
+# Mirrors ElementBounds.pair_can_see exactly; see that module for the
+# derivation and for why the bounds are axis-aligned boxes rather than a
+# sphere and a normal cone. Returns false only when the kernel is provably
+# zero at every point pair of (i, j).
+# ---------------------------------------------------------------------------
+
+@inline _gpu_max_prod(alo, ahi, blo, bhi) =
+    max(max(alo*blo, alo*bhi), max(ahi*blo, ahi*bhi))
+
+@inline function gpu_pair_can_see(elem_blo, elem_bhi, elem_nlo, elem_nhi,
+                                   i::Integer, j::Integer)
+    @inbounds begin
+        # v = q - p ranges over the Minkowski difference of the two point boxes
+        vlo1 = elem_blo[1,j] - elem_bhi[1,i]; vhi1 = elem_bhi[1,j] - elem_blo[1,i]
+        vlo2 = elem_blo[2,j] - elem_bhi[2,i]; vhi2 = elem_bhi[2,j] - elem_blo[2,i]
+        vlo3 = elem_blo[3,j] - elem_bhi[3,i]; vhi3 = elem_bhi[3,j] - elem_blo[3,i]
+
+        si = _gpu_max_prod(elem_nlo[1,i], elem_nhi[1,i], vlo1, vhi1) +
+             _gpu_max_prod(elem_nlo[2,i], elem_nhi[2,i], vlo2, vhi2) +
+             _gpu_max_prod(elem_nlo[3,i], elem_nhi[3,i], vlo3, vhi3)
+        si > 0 || return false
+
+        sj = _gpu_max_prod(elem_nlo[1,j], elem_nhi[1,j], -vhi1, -vlo1) +
+             _gpu_max_prod(elem_nlo[2,j], elem_nhi[2,j], -vhi2, -vlo2) +
+             _gpu_max_prod(elem_nlo[3,j], elem_nhi[3,j], -vhi3, -vlo3)
+        return sj > 0
+    end
+end
+
+# Pack ElementBound structs into (3, N) device matrices.
+function _pack_bounds(mesh, FloatT)
+    bnds = build_element_bounds(mesh.coords, mesh.surface_elems)
+    N    = length(bnds)
+    blo  = Matrix{FloatT}(undef, 3, N); bhi = Matrix{FloatT}(undef, 3, N)
+    nlo  = Matrix{FloatT}(undef, 3, N); nhi = Matrix{FloatT}(undef, 3, N)
+    # Narrowing to Float32 (Metal) rounds to nearest, which could move a bound
+    # *inward* and make the test reject a pair it should keep. Nudge every
+    # bound one ulp outward so the device copy is never tighter than the host
+    # one. The shift is ~1e-7 relative, far below the padding already applied.
+    for (i, b) in enumerate(bnds), k in 1:3
+        blo[k,i] = prevfloat(FloatT(b.plo[k])); bhi[k,i] = nextfloat(FloatT(b.phi[k]))
+        nlo[k,i] = prevfloat(FloatT(b.nlo[k])); nhi[k,i] = nextfloat(FloatT(b.nhi[k]))
+    end
+    return blo, bhi, nlo, nhi
+end
 
 # ---------------------------------------------------------------------------
 # Scalar kernel helpers (type-generic, work in both Float32 and Float64)
@@ -193,7 +242,9 @@ end
                                    N,
                                    bvh_lo, bvh_hi, bvh_meta,
                                    bvh_tri_idx, bvh_tris, bvh_tri_group,
-                                   use_bvh::Bool)
+                                   use_bvh::Bool,
+                                   elem_blo, elem_bhi, elem_nlo, elem_nhi,
+                                   facing_cull::Bool)
     i, j = @index(Global, NTuple)
 
     if i <= N && j <= N && i < j
@@ -248,7 +299,15 @@ end
         Aj += wj * dAj
     end
 
+    # ---- conservative facing test ----
+    # Skips only the integral, never the area writes below: an element whose
+    # every pair is rejected would otherwise never have its area written, and
+    # the 0/0 in the row normalisation would silently produce NaN.
+    do_integral = !facing_cull ||
+        gpu_pair_can_see(elem_blo, elem_bhi, elem_nlo, elem_nhi, i, j)
+
     # ---- double quadrature loop for view factor integral ----
+    if do_integral
     for p in 1:((fi == 0 || fi == 2) ? nq : nqt)
         if fi == 0
             ξ, η   = quad_pts[1,p], quad_pts[2,p]
@@ -312,6 +371,7 @@ end
 
         Fij += wi * inner * dAi
     end
+    end # if do_integral
 
     raw_out[i, j] = Fij
     raw_out[j, i] = Fij
@@ -388,9 +448,16 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
     # Dunavant triangle rule (reuse logic from ViewFactorKernel)
     tri_rule = _dunavant_rule(nquad, FloatT)
 
+    # Conservative facing bounds (see ElementBounds)
+    blo_cpu, bhi_cpu, nlo_cpu, nhi_cpu = _pack_bounds(mesh, FloatT)
+
     # Transfer to device
     return (
         coords        = ArrayT(coords_cpu),
+        elem_blo      = ArrayT(blo_cpu),
+        elem_bhi      = ArrayT(bhi_cpu),
+        elem_nlo      = ArrayT(nlo_cpu),
+        elem_nhi      = ArrayT(nhi_cpu),
         nodes_quad    = ArrayT(nodes_quad_cpu),
         nodes_tri     = ArrayT(nodes_tri_cpu),
         elem_family   = ArrayT(elem_family),
@@ -444,8 +511,9 @@ Pass a `FlatBVH` as `flat_bvh` to enable obstruction checking; omit or pass
 `nothing` for unobstructed computation.
 """
 function launch_vf_kernel!(ga, backend;
-                            groupsize::Int = 16,
-                            flat_bvh       = nothing)
+                            groupsize::Int  = 16,
+                            flat_bvh        = nothing,
+                            facing_cull::Bool = true)
     N      = ga.N
     FloatT = ga.FloatT
     raw_out  = fill!(similar(ga.coords, FloatT, N, N), zero(FloatT))
@@ -483,7 +551,9 @@ function launch_vf_kernel!(ga, backend;
                N,
                bvh_lo, bvh_hi, bvh_meta,
                bvh_tri_idx, bvh_tris, bvh_tri_group,
-               use_bvh;
+               use_bvh,
+               ga.elem_blo, ga.elem_bhi, ga.elem_nlo, ga.elem_nhi,
+               facing_cull;
                ndrange=(N, N))
 
     KernelAbstractions.synchronize(backend)

@@ -685,3 +685,306 @@ for MC at a given `n_samples`) applies to any future case.
 CSV/summary output), `benchmarks/howell/geom.jl` (sphere mesh sizing),
 `benchmarks/howell/RESULTS.md` (full quad-vs-MC comparison table and this
 finding, written up in more detail there).
+
+## 2026-09-14 — Documentation fix: `nquad` counts points per *element*, not per pair
+
+**Bug (documentation only, no behaviour change)**: three places stated that
+`nquad=4` gives "16 points per element pair". It gives `nquad²` = 16 points on
+*each* element, so the pair integral in `_integrate_pair` costs `nquad⁴` = 256
+point-*pairs* per element pair. `docs/src/manual/integration_methods.md`
+already had it right for the Duffy path ("`nquad⁴` for standard quadrature"),
+so the package contradicted itself.
+
+**Why it matters**: `n_samples` counts point-pairs directly, so the natural
+reading — compare `n_samples` against `nquad²` — overstates Monte Carlo's
+relative cheapness by a factor of `nquad²`. The §"Monte Carlo cost scales as
+1/msz⁴" entry above is itself affected: it reasons from "nquad=6 is 36
+points/pair" and derives "at `n_samples=10000`, 278x more points/pair". With
+the correct `nquad⁴` = 1296 the true ratio is 7.7x, not 278x. That entry's
+remediation (coarsening the sphere meshes, halving `MC_SAMPLES`) was still
+directionally right and its measured timings stand; only the stated factor
+was wrong.
+
+**Files**: `src/Assembly.jl` (`compute_view_factors` docstring, `nquad` and
+`n_samples` entries), `docs/src/manual/integration_methods.md`,
+`docs/src/manual/performance.md`.
+
+## 2026-09-14 — Monte Carlo is the wrong kernel for obstructed geometries
+
+Measured while computing view factors on a 2nd-order reactor fuel-assembly
+slice (`FA_slice_2o.msh`, Quad9 → Quad8, pin surfaces + assembly wall) with
+`obstruction_groups` set.
+
+`compute_view_factors(...; monte_carlo=true, n_samples=5000)` on the
+Central_Support ↔ Pin_23 case (N=4320, 6 groups, obstruction on) took
+**1368 s**. The same case at `nquad=4` took **60.4 s** — 22.6x faster — and
+the two agree to five decimals:
+
+| Method | F(Central_Support→Pin_23) | F(Pin_23→Central_Support) | Time |
+|---|---|---|---|
+| MC, `n_samples=5000` | 0.380439 | 0.213580 | 1368 s |
+| Quadrature, `nquad=4` | 0.380440 | 0.213580 | 60.4 s |
+| Quadrature, `nquad=6` | 0.380403 | 0.213560 | 306 s |
+
+Two compounding causes, both measured on an 8-core M3 (N=1440 fixture, no
+obstruction):
+
+1. **Point-pair count.** `n_samples=5000` versus `nquad=4`'s `nquad⁴` = 256 is
+   19.5x more kernel evaluations — and, with obstruction on, 19.5x more BVH
+   ray casts, because `_integrate_pair` and `element_pair_view_factor_mc`
+   apply the identical `K == 0` guard before calling `is_visible`. The
+   docs claimed MC wins on obstructed geometries because it "pays the BVH cost
+   only for kernel-positive pairs"; quadrature does exactly the same, so there
+   is no structural advantage. That guidance is now corrected.
+2. **Per-evaluation cost.** At *matched* work (256 point-pairs each):
+   quadrature 0.16 s, MC 1.09 s — MC is 6.8x slower per evaluation. Its loop
+   reloads both sides per sample and gathers element-j data through a random
+   index; quadrature's nested loop hoists element-i data out of the inner loop
+   and keeps a ~1.8 kB working set in L1.
+
+Net: 16.08 s (MC, 5000) versus 0.16 s (`nquad=4`) unobstructed — ~100x.
+The obstructed ratio is smaller (22.6x) because the shared ray-cast cost
+dominates both paths and compresses the gap toward the 19.5x count ratio.
+
+The Metal GPU backend does not rescue the MC path: the same obstructed N=4320
+case reached 25% of pairs in 761.7 s, extrapolating to ~51 min, against
+22.8 min on 8 CPU threads. Per-sample BVH traversal is branch-divergent and
+parallelizes badly. Not worth pursuing; Metal remains a `[weakdeps]`
+extension and was not promoted.
+
+**Files**: `docs/src/manual/integration_methods.md` ("When to use" and method
+table), `src/Assembly.jl` (`n_samples` docstring).
+
+## 2026-09-14 — Rejected optimization: cyclic-offset sample pairing in the MC kernel
+
+`element_pair_view_factor_mc` draws `kj = rand(rng, 1:n)` per sample, which
+reads element-j's sample arrays out of order. Replacing it with a single
+random cyclic offset per pair (`kj = ((k-1+off) mod n)+1`) restores sequential
+access and is **2.2x faster** at `n_samples=5000` (52.7 → 23.2 µs per pair;
+1.05 vs 2.25 µs at n=256). It is also exactly unbiased: for fixed `k` a
+uniform `off` makes `kj` uniform on `1:n`, so every term keeps the same
+expectation.
+
+**Rejected anyway.** Measured over 40 seeds on four facing Quad8 pairs from
+the reactor-pin mesh, the means agree (|Δmean| ≈ 0.9–1.0 SEM, no detectable
+bias) but the per-pair standard deviation is ~30x worse:
+
+| Pair | mean (random idx) | sd | mean (cyclic) | sd |
+|---|---|---|---|---|
+| 1314-274 | 0.00148143 | 7.52e-6 | 0.00151512 | 2.35e-4 |
+| 1246-287 | 0.00168612 | 9.98e-6 | 0.00173862 | 3.47e-4 |
+| 1127-287 | 0.00110550 | 7.53e-6 | 0.00113845 | 2.04e-4 |
+| 1195-235 | 0.00120976 | 6.47e-6 | 0.00124293 | 2.12e-4 |
+
+The cause: one offset leaves a single random degree of freedom per pair
+instead of `n`, so the `n` terms move coherently with it rather than
+averaging down. Recovering that accuracy costs far more samples than the 2.2x
+saved. Shuffling the sample arrays first does not help — the offset is still
+one degree of freedom.
+
+Hoisting a `Random.Sampler` out of the loop was also tried and does nothing
+(52.7 → 49.2 µs), so the `rand` call itself is not the cost; the random memory
+access is.
+
+**Files**: `src/MCKernel.jl` — code unchanged; the `element_pair_view_factor_mc`
+docstring and inner loop now carry a note recording this measurement, so the
+random draw is not "optimized" away again.
+
+## 2026-09-14 — Pair-level facing cull in all four kernels
+
+New `src/ElementBounds.jl`, wired into the CPU quadrature, CPU Monte Carlo, GPU
+quadrature and GPU Monte Carlo paths, behind
+`compute_view_factors(...; facing_cull=true)` (the default; pass `false` to
+disable).
+
+**Why**: both pair integrators already returned zero for a *point* pair with
+non-positive cosines (`K == 0 && continue`), but discovered that one point pair
+at a time — after entering the pair and, with obstruction on, after a BVH ray
+cast. On closed convex bodies most element pairs face away from each other
+entirely, so that per-point test was paid `nquad⁴` (or `n_samples`) times per
+pair to conclude nothing. This came out of a comparison with pyViewFactor,
+which masks non-facing pairs wholesale before integrating.
+
+**The bound**: each element gets an axis-aligned box for its points and another
+for its unit normals, both sampled on a fixed grid and padded outward. For
+p ∈ i, q ∈ j the separation lies in the Minkowski difference of the point
+boxes, and maximising each component independently gives an upper bound on
+dot(n, q-p); if it is ≤ 0 the kernel is zero at every point pair. Rejection is
+therefore conservative and the assembled matrix is unchanged.
+
+**Two earlier variants were measured and discarded**, on a 1440-element
+reactor-pin fixture where 16.9% of pairs are genuinely nonzero (so 83.1% is the
+ceiling):
+
+| Bound | Pairs rejected |
+|---|---|
+| Bounding sphere + circular normal cone | 13.3% |
+| Bounding sphere + normal box | 36.8% |
+| Point box + normal box (adopted) | 62.0% |
+
+The cone fails because its half-angle α contributes slack growing like
+`|d|·sin α`, which swamps the test at range. On an extruded mesh the normals of
+a cylindrical element have *no* axial component, but a circular cone inflates
+that 1-D circumferential arc into a 2-D disc admitting axial tilt. The sphere
+fails for the same reason in position space: it contributes `Rᵢ + Rⱼ` in every
+direction, which badly over-bounds elements far taller than they are wide.
+Both boxes represent the extruded case exactly.
+
+**Verification**: on the 1440-element fixture and the 4320-element 6-group
+reactor case, with and without obstruction, `F_elem` is **bitwise identical**
+with the cull on and off, and a direct sweep of all N(N-1)/2 pairs confirms
+**zero** pairs rejected that had a nonzero reference value. The GPU quadrature
+kernel is likewise bitwise identical in both `raw_out` and `area_out`. Rejection
+rates were 62.0% and 65.6%.
+
+**GPU specifics**: the quadrature kernel skips the double loop but still writes
+`area_out`, since an element all of whose pairs were rejected would otherwise
+get no area and a NaN row. The MC kernel cannot skip its sample loops at all —
+`area_out` is estimated from those very samples — so it culls only the
+kernel/BVH evaluation, which is where the cost sits. Bounds are nudged one ulp
+outward when narrowed to Float32 for Metal, so the device copy is never tighter
+than the host one.
+
+**Files**: `src/ElementBounds.jl` (new), `src/RadiativeViewFactor.jl` (include
+and re-export), `src/Assembly.jl` (`facing_cull` kwarg, both CPU pair loops,
+cull-rate diagnostic, GPU hook), `src/GPUKernels.jl` (`gpu_pair_can_see`,
+`_pack_bounds`, kernel argument and guard, launcher), `src/GPUMCKernels.jl`
+(kernel argument, guard at both `_vf_contribution` sites, launcher),
+`src/GPUAssembly.jl` (plumbing).
+
+## 2026-09-14 — Pre-existing: GPU Monte Carlo element areas are nondeterministic
+
+Found while verifying the facing cull, and *not* caused by it.
+
+`_mc_pair_kernel!` writes `area_out[i]` from every thread in row i. Each thread
+seeds its RNG from its own `(i,j)` thread id, so every writer holds a
+*different* Monte Carlo estimate of the same element area, and which one
+survives depends on the race. Two runs with identical settings and an identical
+`seed` produced areas differing by up to 8.3e-5 relative (max absolute
+2.9e-6) on a 1440-element mesh.
+
+Every value written is a valid estimate, so this is noise rather than error, but
+it means GPU MC results are not bitwise reproducible even with a fixed seed, and
+that ~1e-4 area noise propagates straight into `F = raw / A`. The CPU MC path
+does not share the problem: it draws one sample set per element (O(N)) and takes
+the area from that. Not fixed here — the GPU MC path is deprioritised after the
+obstruction measurements above — but worth knowing before trusting a GPU MC run
+to better than ~0.01%.
+
+**Files**: none (diagnosis only).
+
+## 2026-09-14 — `radiating_groups`: assemble a subset while everything still shadows
+
+New `restrict_to_radiating(mesh, tags)` in `src/MeshIO.jl`, exposed as
+`compute_view_factors(...; radiating_groups=Int[])`.
+
+**Why**: assembly is dense over whatever it is handed, so asking for the view
+factor between *one* pair of surfaces in a mesh that also contains two dozen
+shadowing bodies cost `O(N_total²)` — and most of that work computed view
+factors *between the shadowing bodies*, which nobody asked for. This was the
+dominant term in a comparison against pyViewFactor, which lets obstruction
+geometry stay out of the pair enumeration entirely; it was worth 9x to 37x in
+pair count on the reactor cases, far more than the facing cull recovered.
+
+**How**: the restriction happens at the `MeshData` level, before backend
+dispatch, so both the CPU and GPU paths get it with no per-path plumbing.
+`surface_elems`, `group_tags` and `group_elems` are cut to the nominated groups
+and renumbered; `group_tri_soup` — the only thing the obstruction BVH reads — is
+carried over **whole**, so occlusion is completely unaffected.
+
+**Verified bitwise.** Each pair's integral depends only on its two elements and
+the obstruction BVH, all identical between the two runs, so the expectation was
+bitwise equality rather than mere agreement. That is what came out, on all three
+reactor cases at `nquad=4` (obstruction on, subset compared against the
+full-assembly value):
+
+| Case | radiating / loaded elements | F, full assembly | F, subset | Bitwise |
+|---|---|---|---|---|
+| Central_Support → Pin_23 | 1440 / 4320 | 0.38043964100835853 | 0.38043964100835853 | yes |
+| Pin_23 → Pin_11 | 1920 / 9120 | 0.03905464385428897 | 0.03905464385428897 | yes |
+| FA_wall → Pin_11 | 3040 / 18400 | 0.0023661623551932535 | 0.0023661623551932535 | yes |
+
+Group areas match bitwise too. Wall-clock, comparing against full-assembly
+timings recorded in an earlier process: Pin_23 → Pin_11 223.9 s → 10.3 s
+(21.7x, against a 22.6x pair-count ratio) and FA_wall → Pin_11 1358.0 s →
+101.5 s (13.4x, against 36.6x — the excluded pin-pin pairs were
+disproportionately cheap ones the facing cull already rejected). The
+Central_Support → Pin_23 arm is not quoted: its full-assembly run absorbed
+first-call compilation in that process and its 50x is not a fair number.
+
+Peak memory falls with the same square: FA_wall → Pin_11 holds a 3040² matrix
+rather than 18400², about 150 MB against 5.4 GB — which is what makes an
+`nquad=6` run of that case feasible on a 16 GB machine at all.
+
+**Caveat, documented in three places**: the enclosure is deliberately open. The
+non-radiating bodies still absorb but are never assembled, so `Σⱼ Fᵢⱼ < 1` and
+`check_closure` is not meaningful on such a result; `compute_view_factors`
+prints a warning line when subsetting, and `check_closure`'s own docstring now
+says so. Reciprocity is unaffected and remains the right validation.
+`write_nekrs_view_factors` already refused a row-count mismatch; its error now
+names this as a cause and points at `restrict_to_radiating`.
+
+**Files**: `src/MeshIO.jl` (`restrict_to_radiating`, exported),
+`src/RadiativeViewFactor.jl` (re-export), `src/Assembly.jl` (`radiating_groups`
+kwarg, restriction before dispatch, docstring), `src/Results.jl`
+(`check_closure` caveat), `src/NekExport.jl` (error message).
+
+## 2026-09-14 — Howell benchmark suite re-run with `radiating_groups`, plus provenance
+
+The Section-C suite now uses `radiating_groups` wherever a case's extractors
+read only some of its mesh's physical groups, and `results.csv` records the
+machine and the per-call runtimes alongside the errors.
+
+**Restriction applied to three case families**:
+
+| Case | Radiating / loaded elements | Points restricted |
+|---|---|---|
+| C-72 (cylinder, square array) | 144 / 1200 | 6 of 6 |
+| C-73 (cylinder, triangular array) | 144 / 1200 | 6 of 6 |
+| C-33 (hexagonal prism) | 157–1386 of 689–2135 | 15 of 18 |
+
+C-72/C-73 are the clearest win: all 25 cylinders must remain obstructors but
+only the centre cylinder and its two reference neighbours are ever read, so the
+assembled matrix falls from 1200 elements to 144 — about 70x fewer pairs, on
+cases that are obstructed and therefore expensive per pair. Both now complete in
+under a second per kernel. C-8 was deliberately left alone: its extractors need
+all but one of ~33 groups, and the tube counts are not known until the mesh is
+built.
+
+**Verified exact, not assumed.** All 115 quadrature rows are *bitwise identical*
+to the same suite run without `radiating_groups`. Monte Carlo rows are not (57 of
+115 match): restricting the element set, and separately the new facing cull,
+change how many `rand` draws the per-row RNG streams consume, so the sampling
+differs. Worst relative change across all MC rows is 6.9e-4 — inside the
+kernel's own noise — and both pass counts are unchanged at 109/115 quad and
+110/115 MC.
+
+**A trap worth recording**: the case extractors index `F_group` positionally and
+`_aggregate` orders groups by sorted tag, so restricting to a non-prefix set such
+as `{1,4}` moves tag 4 into position 2 and `fij(1,4)` then silently reads the
+wrong factor — wrong numbers, no error. `run_case` now rejects any radiating set
+that is not the prefix `1:k`.
+
+**Provenance and runtimes**: `results.csv` gains `n_radiating`, `restricted` and
+`seconds` columns plus a commented preamble (date, CPU, core counts, Julia
+threads, memory, OS, Julia and package versions, git commit with dirty flag,
+`n_samples`, total wall time). Note `Sys.CPU_THREADS` reports 4 on this M3 —
+it counts performance cores only — so the OS figure (`hw.logicalcpu` = 8) is
+recorded beside it rather than leaving an ambiguous count. A warm-up case runs
+before the timed loop so per-case times exclude first-call compilation, and
+`flush(stdout)` after each case keeps progress visible (without it the entire
+run's stdout sat in a buffer and the log showed only stderr warnings).
+
+**Measured**: total 6306 s (1 h 45 m) on an Apple M3 with 8 Julia threads —
+565 s quadrature, 5723 s Monte Carlo, so MC costs 10x quadrature over the suite.
+Two patterns are visible. C-10 alone is 58% of the total (3665 s), because its
+geometry meshes a semi-infinite rectangle as a finite one of width 80. And the
+MC/quad ratio is *worst on the cheapest cases* — over 200x on C-1 to C-4 —
+since MC pays `n_samples` point-pairs per element pair no matter how simple the
+geometry, while `nquad=6` quadrature pays `nquad⁴` = 1296 and scales down with
+the mesh.
+
+**Files**: `benchmarks/howell/run.jl` (system info, warm-up, per-kernel timing,
+`radiating` case option and prefix guard, extended CSV, stdout flush),
+`benchmarks/howell/RESULTS.md` (regenerated tables, new System, Runtimes and
+Restricted assembly sections), `benchmarks/howell/results.csv` (regenerated).

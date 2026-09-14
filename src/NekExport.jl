@@ -78,7 +78,11 @@ function write_nekrs_view_factors(path::AbstractString,
     N == size(result.F_elem, 1) ||
         error("result.F_elem ($(size(result.F_elem))) does not match " *
               "mesh.surface_elems ($N elements); pass the same `mesh` that " *
-              "was used to compute `result`.")
+              "was used to compute `result`. If the result came from " *
+              "`compute_view_factors(...; radiating_groups=rg)`, pass " *
+              "`restrict_to_radiating(mesh, rg)` here so the rows line up — " *
+              "though note such a result is an open enclosure, whose row sums " *
+              "do not close to 1, which is usually not what Nek wants.")
     all(e -> e.eg > 0 && 1 <= e.iface <= 6, elems) ||
         error("write_nekrs_view_factors requires a mesh loaded with " *
               "load_re2 (every SurfaceElement needs a Nek (eg,iface) " *
