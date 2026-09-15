@@ -1299,3 +1299,104 @@ natural follow-up, and the more convincing accuracy evidence long-term.
 Corner-triangulation faceting bias on curved 2nd-order elements (same
 caveat the existing obstruction soups already carry) not separately
 quantified for this kernel.
+
+## Ray-shooting kernel wired into the GPU path (`raytrace=true, backend=CUDABackend()`/`MetalBackend()`)
+
+Context: the CPU ray-shooting kernel above was left GPU-less. The existing
+GPU pair kernels (`GPUMCKernels.jl`, `GPUKernels.jl`) are one-thread-per-pair
+(`ndrange=(N,N)`); ray-shooting's whole appeal is *not* being O(N²), so it
+needed its own thread mapping (one thread per *element*) and its own
+nearest-hit BVH traversal (the existing `gpu_intersect_bvh` is any-hit only,
+built for "is this pair blocked", not "what did this ray land on").
+
+### New GPU-side pieces
+
+- **`src/BVH.jl` / `src/GPUBVH.jl`**: `gpu_nearest_hit_bvh` — a stackless,
+  miss-link-based nearest-hit traversal (same pruning idea as the CPU
+  `nearest_hit_bvh` added earlier: shrink the AABB test's `t_max` to the
+  best `t` found so far), alongside the existing any-hit
+  `gpu_intersect_bvh`. Also computes the winning triangle's front/back
+  classification inline (the sign of `dot(cross(e1,e2), -direction)` — no
+  normalization needed, sign is scale-invariant), since the vertices are
+  already in registers when a candidate becomes the new best hit. New
+  `build_flat_scene_bvh(mesh, obstruction_groups, FloatT, ArrayT)` builds
+  the GPU ray-tracing scene by calling the CPU-side
+  `RayTraceKernel.build_scene_bvh` (reusing the triangulation/tagging logic
+  rather than duplicating it a third time) and flattening the result with
+  the existing `build_flat_bvh` — `FlatBVH`'s `tri_group` field is reused to
+  carry a *per-triangle element index* here rather than a physical group
+  tag (0 = non-radiating blocker), a different meaning from what the pair
+  kernels' `build_flat_bvh_from_mesh` puts in that same field, so the two
+  BVHs are not interchangeable even though they share a struct.
+- **`src/GPURayTraceKernels.jl`** (new module): the ray-shooting `@kernel`
+  (one thread per element, `n_rays` shot serially, same stratified-point +
+  independent-cosine-direction sampling as the CPU kernel), a small
+  quadrature-based element-area kernel (reusing `GPUKernels`'
+  `_quad8_point_and_jac`/`_tri6_point_and_jac`/`_quad4_point_and_jac`/
+  `_tri3_point_and_jac` — exact areas, not sampled, matching the CPU path's
+  choice of `precompute_quad` over an MC area estimate), and a chunked
+  host-side launcher (mirrors `GPUMCKernels.launch_mc_kernel!`'s
+  adaptive-chunk-size pattern, needed for the same reason: macOS kills
+  long-running Metal command buffers). Reuses existing GPU building blocks
+  rather than reimplementing them: `GPUMCKernels._prepare_elem`/
+  `_sample_prepared` (the pair-area MC kernel's per-thread-hoisted uniform
+  point+normal sampler — exactly what a ray origin needs too) and
+  `GPUMCKernels._xorshift32`/`_init_rng` (the inline PRNG; a 64-bit RNG
+  would dominate kernel runtime on GPUs that emulate 64-bit integer math in
+  software, e.g. Apple Silicon). Cosine-weighted direction sampling is the
+  same branchless orthonormal-basis construction as the CPU kernel (Duff et
+  al., *Building an Orthonormal Basis, Revisited*, JCGT 2017), written in
+  scalar components to match this file's existing GPU style.
+- **`src/GPUAssembly.jl`**: `compute_view_factors_gpu` gained
+  `raytrace`/`n_rays` keywords, dispatching to a new
+  `_compute_gpu_raytrace` that mirrors `Assembly._compute_cpu_raytrace`
+  exactly once the kernel returns — same reciprocity-by-construction
+  averaging of the two independent per-element raw estimates, same
+  approximately-(not exactly-)1 row-sum caveat on closed enclosures, same
+  verbose diagnostics.
+- **`src/Assembly.jl`**: the `raytrace=true, backend isa CPU` restriction is
+  gone; validation (mutually exclusive with `monte_carlo`/`self_vf`, no
+  curve meshes) now happens before the CPU/GPU backend branch, and both
+  branches pass `raytrace`/`n_rays` through (`_gpu_compute_hook`'s
+  signature grew those two arguments).
+
+### Verified
+
+Real GPU hardware (CUDA/Metal) was not available in this environment; tested
+the same way the existing (untested-elsewhere) GPU pair kernels are — via
+KernelAbstractions' `CPU()` execution backend, which runs the *actual* GPU
+kernel code (not a separate CPU implementation) through KernelAbstractions'
+backend abstraction, just on CPU threads instead of a real device. This
+validates kernel correctness and the whole dispatch path, but is **not** a
+GPU speed measurement — `backend=CPU()` here is a correctness harness, not a
+benchmark, and no claim is made about real CUDA/Metal performance.
+
+New tests, appended to `test/GPU_test.jl` (14 tests, all passing): unbiased
+against the analytic two-facing-plates value at the low level
+(`launch_area_kernel!`/`launch_raytrace_kernel!` directly) and confirmed
+bias-free at `n_rays`=4,000,000 (deviation under 1σ; the test itself uses a
+looser tolerance sized for `n_rays`=200,000's larger single-seed noise);
+`compute_view_factors_gpu(...; raytrace=true)` end-to-end with exact
+reciprocity; the same front/back-face and self-obstruction-without-
+`obstruction_groups` regression case as the CPU test suite, cross-checked
+against quadrature; closed-cube row-sum closure exercising the chunked
+launcher; argument validation; `@inferred` type stability on
+`gpu_nearest_hit_bvh` and the cosine-direction sampler. Full test suite
+(`Pkg.test()`, 8 threads) passes unchanged, including the new tests.
+
+**Files**: `src/BVH.jl`/`src/GPUBVH.jl` (`gpu_nearest_hit_bvh`,
+`build_flat_scene_bvh`), `src/GPURayTraceKernels.jl` (new),
+`src/GPUAssembly.jl` (`raytrace`/`n_rays`, `_compute_gpu_raytrace`),
+`src/Assembly.jl` (dispatch restructuring, `_gpu_compute_hook` signature),
+`src/RadiativeViewFactor.jl` (include order), `test/GPU_test.jl` (new
+testset), `README.md` (GPU usage examples, file tree). Branch: `mc_speedup`.
+
+### Not done / scope of this pass
+
+No real-hardware (CUDA/Metal) testing — only KernelAbstractions `CPU()`
+backend correctness testing, as above. No chunking-boundary stress test
+(the closed-cube test forces multiple chunks via a small mesh, but a
+large-N/large-`n_rays` combination that would need many chunks on real
+hardware wasn't run here). Same CPU-side scope gaps as before still apply
+on GPU: no 2-D curve-mesh support, no `self_vf` support, not run against
+the `benchmarks/howell/` catalog suite.

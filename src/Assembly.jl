@@ -143,7 +143,11 @@ Assemble the full view factor matrix at element and physical-group level.
                           estimator (it never evaluates 1/r²), so
                           `use_duffy`/the Duffy patch/`factor` do not apply.
                           `facing_cull` does not apply either (there is no
-                          O(N²) pair loop to cull). CPU only; 3-D meshes only
+                          O(N²) pair loop to cull). Runs on CPU or GPU
+                          (`backend=CUDABackend()`/`MetalBackend()`, same as
+                          `monte_carlo`) with its own GPU kernel
+                          (`GPURayTraceKernels.jl`); one thread per *element*
+                          on GPU, not per pair. 3-D meshes only
                           (`mesh.mesh_dim == 2`); incompatible with
                           `self_vf` (a ray is never tested against its own
                           origin element) and with `monte_carlo=true`.
@@ -233,8 +237,6 @@ function compute_view_factors(mesh               ::MeshData;
             error("raytrace does not support self_vf: a ray is never tested " *
                   "against its own origin element. Use the default (quadrature) " *
                   "or monte_carlo=true path for self-view factors.")
-        backend isa CPU ||
-            error("raytrace is CPU-only; no GPU ray-tracing kernel exists yet.")
     end
 
     # Restrict the radiating surface before anything else: every path below
@@ -256,25 +258,27 @@ function compute_view_factors(mesh               ::MeshData;
     use_duffy && !monte_carlo && !(backend isa CPU) &&
         @warn "use_duffy is CPU-only; ignored for GPU backends."
 
-    if raytrace
-        mesh.mesh_dim == 1 &&
+    if mesh.mesh_dim == 1
+        raytrace &&
             error("raytrace does not support curve meshes (mesh_dim=1) yet. " *
                   "Use monte_carlo=true or the default quadrature path.")
-        return _compute_cpu_raytrace(mesh, nquad, obstruction_groups, n_rays,
-                                     rng, verbose)
+        (backend isa CPU) ||
+            error("GPU backend does not support curve meshes (mesh_dim=1). " *
+                  "Use the CPU backend for 2D per-unit-depth view factors.")
     end
 
     if !(backend isa CPU)
-        if mesh.mesh_dim == 1
-            error("GPU backend does not support curve meshes (mesh_dim=1). " *
-                  "Use the CPU backend for 2D per-unit-depth view factors.")
-        end
         ArrayT = _gpu_array_type(backend)
         FloatT = _gpu_float_type(backend)
         return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                                   obstruction_groups, verbose,
-                                  monte_carlo, n_samples, factor, facing_cull)
+                                  monte_carlo, n_samples, factor, facing_cull,
+                                  raytrace, n_rays)
     end
+
+    raytrace &&
+        return _compute_cpu_raytrace(mesh, nquad, obstruction_groups, n_rays,
+                                     rng, verbose)
 
     return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose,
                          mesh.mesh_dim, monte_carlo, n_samples, rng, use_duffy,
@@ -597,7 +601,7 @@ const _GPU_HOOK_REF = Ref{Any}(nothing)
 
 function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                             obstruction_groups, verbose, monte_carlo, n_samples,
-                            factor, facing_cull)
+                            factor, facing_cull, raytrace, n_rays)
     _GPU_HOOK_REF[] === nothing &&
         error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
     return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
@@ -606,7 +610,9 @@ function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                              monte_carlo=monte_carlo,
                              n_samples=n_samples,
                              factor=factor,
-                             facing_cull=facing_cull)
+                             facing_cull=facing_cull,
+                             raytrace=raytrace,
+                             n_rays=n_rays)
 end
 
 """
