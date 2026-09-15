@@ -1078,6 +1078,48 @@ patch would leave them at their initialized 0.0 permanently.
 takes optional precomputed `pairs`), `src/Assembly.jl` (`_compute_cpu`
 computes and reuses `near_pairs` once).
 
+## Combined effect, measured head-to-head against the unmodified `v0.6.3` baseline
+
+Same `n_samples=5000` on both sides (isolating the algorithmic changes from
+the default-value change in §2 above), 8 Julia threads, Apple M3, each side
+run alone (not concurrently with the other, to avoid CPU contention between
+the two Julia processes skewing the numbers — an earlier concurrent run
+showed exactly that: C-79 and C-109 looked artificially slow on the baseline
+side because the branch's own C-8 run was still using all 8 threads).
+Median of 5 seeds per case (3 for the obstructed case, which is much slower
+per run):
+
+| Case (Howell) | N elements | baseline median | branch median | speedup |
+|---|---:|---:|---:|---:|
+| C-11 (Quad8) | 288 | 1.223 s | 0.274 s | 4.5x |
+| C-40 (Quad8) | 486 | 3.354 s | 0.631 s | 5.3x |
+| C-135 (Tri6) | 996 | 8.526 s | 1.956 s | 4.4x |
+| C-79 (Quad8) | 1169 | 13.589 s | 3.391 s | 4.0x |
+| C-109 (Tri6+Quad8) | 2127 | 42.220 s | 11.290 s | 3.7x |
+| C-68 (Line3) | 144 | 0.026 s | 0.017 s | 1.5x |
+| C-8 (Line3, obstructed) | 1178 | 71.606 s | 66.609 s | 1.07x |
+
+The combined speedup (3.7x-5.3x on the larger unobstructed cases) is well
+above what §1 (pairing) alone gave (1.25-2.8x, measured earlier with 6
+seeds): §3's near-pair skip turns out to matter more than expected on
+meshes with many adjacent pairs — C-79 and C-109 have 46,960 and 109,048
+near pairs respectively (`near_pairs(...; factor=3.0)`), each of which the
+unmodified bulk loop spent a full `n_samples`-sample MC estimate computing
+and then discarded when the Duffy patch overwrote it.
+
+C-68 (a small, cheap case) speeds up much less in absolute terms because the
+Duffy patch's own fixed cost (now threaded, but still nonzero) is a larger
+fraction of its total time. C-8, the one obstructed case measured, is
+dominated by BVH ray casts rather than the pairing or patch cost, so it
+sees only a modest 1.07x from these three changes alone — its share of the
+overall speedup for obstructed meshes comes mainly from §2's lower default
+`n_samples`, not from this table (which holds `n_samples` fixed to isolate
+§1 and §3).
+
+Accuracy (group-level view-factor error against the Howell catalog, same
+seeds) was unchanged to first order in every case above; per-case numbers
+are in the investigation notes referenced below.
+
 **Verified**: full test suite (`Pkg.test()`, 8 threads) passes unchanged,
 including the two tests that exercise these paths directly — "MC pair
 estimator is unbiased for coarse elements" (`test/ray_test.jl`) and "Monte
