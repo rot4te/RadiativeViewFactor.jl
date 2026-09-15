@@ -20,9 +20,9 @@
 #   ξ = 2u - 1,  η = 2v - 1   (Jacobian = 4 per element)
 # All Duffy decompositions operate in (u,v) ∈ [0,1]². The decomposition itself
 # only depends on corner-node adjacency and the isoparametric map, not on
-# element order, so the same 8-region/5-region formulas apply to Quad4 pairs;
-# only the physical-point/normal evaluation (`_eval_quad`) dispatches on
-# `elem.family` to call the Quad4 or Quad8 shape functions.
+# element order, so the same region formulas apply to Quad4 pairs; only the
+# physical-point/normal evaluation (`_eval_quad`) dispatches on `elem.family`
+# to call the Quad4 or Quad8 shape functions.
 #
 # Singularity cases for two same-order quad elements (Quad4 or Quad8)
 # ---------------------------------------------------------------------
@@ -35,39 +35,35 @@
 #   COMMON_EDGE  — two shared corner nodes (one shared edge); singular
 #                  manifold is a 2D surface in [0,1]⁴
 #
-# Duffy transformation for COMMON_VERTEX
-# ----------------------------------------
-# Let the shared corner be at (u₀,v₀) in element i's unit square and
-# (s₀,t₀) in element j's unit square.
+# Decomposition: an elementary "biggest-coordinate" Duffy transform
+# --------------------------------------------------------------------
+# Both cases use the same idea, and it is *not* Sauter & Schwab's specific
+# boundary element method region formulas — a related but different
+# decomposition of the same singularity. Shift coordinates so the singular
+# point (or line) sits at the origin, split the domain into the sub-regions
+# where each candidate coordinate is the largest in magnitude, and in each
+# sub-region substitute that coordinate for a radial variable ρ ∈ [0,1]. The
+# resulting Jacobian is a power of ρ that exactly cancels the 1/r²
+# divergence near ρ=0, leaving a bounded, smooth integrand:
 #
-# Shift coordinates so the singular point is at the origin:
-#   ũ = u - u₀,  ṽ = v - v₀,  s̃ = s - s₀,  t̃ = t - t₀
+#   COMMON_VERTEX — the singularity is the single point where all four
+#     shifted coordinates (du,dv,ds,dt) vanish together. Splitting by which
+#     of the four is largest gives 4 regions, each with Jacobian ρ³. See the
+#     comment above `_vertex_integral` for the full construction.
 #
-# In the shifted coordinates r ~ √(ũ²+ṽ²+s̃²+t̃²) near the singularity.
-# Decompose the 4D unit hypercube into 24 simplices, each mapping via
-# Duffy-type coordinates to [0,1]⁴ with Jacobian ρ³ that cancels 1/r² × ρ²
-# from the area elements, leaving an integrand bounded at ρ=0.
+#   COMMON_EDGE — the singularity is the *line* running along the shared
+#     edge, not a single point. The along-edge coordinate is kept free (it
+#     never participates in the singularity); splitting the remaining
+#     across-edge geometry first into 2 triangles (whichever element's
+#     edge-local coordinate is larger) and then, within each triangle, by
+#     which of 3 remaining coordinates is largest, gives 6 regions total
+#     (2 × 3), each with Jacobian ρ² times the free edge coordinate. See the
+#     comment above `_edge_integral` for the full construction.
 #
-# In practice we use the Sauter–Schwab decomposition (a structured version
-# of the Duffy transformation used in BEM) which gives 5 quadrilateral
-# regions for COMMON_EDGE and 2 for COMMON_VERTEX, each integrated with a
-# tensor-product Gauss rule.
-#
-# Implementation
-# --------------
-# Rather than the full 4D Sauter–Schwab decomposition (which is complex to
-# implement correctly), we use a simpler but effective approach:
-#
-# For COMMON_VERTEX: decompose the double integral into 8 sub-problems by
-#   splitting each element's reference square at the singular corner into
-#   2 triangles, applying a 1D Duffy transformation in the radial direction
-#   (ρ direction toward the singular corner) on each triangle.
-#
-# For COMMON_EDGE: use the Sauter–Schwab 5-region decomposition which is
-#   the established method for this case.
-#
-# The resulting integrands are smooth and the standard nquad-point GL rule
-# achieves spectral convergence.
+# Each region is evaluated with a tensor-product `nquad`-point Gauss–Legendre
+# rule — `4 × nquad⁴` points total for COMMON_VERTEX, `6 × nquad⁴` for
+# COMMON_EDGE — and the resulting integrand is smooth enough for the standard
+# rule to achieve spectral convergence.
 # ---------------------------------------------------------------------------
 
 module DuffyKernel
@@ -385,11 +381,15 @@ end
 
 Compute the raw double integral ∬K dAⱼ dAᵢ using the appropriate method:
 - NONE:          standard Gauss–Legendre quadrature
-- COMMON_VERTEX: Sauter–Schwab 8-region Duffy transformation
-- COMMON_EDGE:   Sauter–Schwab 5-region Duffy transformation
+- COMMON_VERTEX: 4-region "biggest-coordinate" Duffy decomposition
+- COMMON_EDGE:   6-region "biggest-coordinate" Duffy decomposition
 
-The Duffy/Sauter–Schwab singular treatment applies to same-order quad pairs
-— both Quad4 or both Quad8. This matters for Quad4 in particular because
+This is an elementary generalization of Duffy's original single-simplex
+transform (see the module comment above), not the specific region formulas
+of Sauter & Schwab's boundary element method.
+
+The Duffy singular treatment applies to same-order quad pairs — both Quad4
+or both Quad8. This matters for Quad4 in particular because
 that's the only family `load_re2` produces (Nek5000/NekRS boundary faces),
 and structured hex-mesh boundaries have many edge-adjacent Quad4 pairs whose
 shared-edge singularity plain quadrature (and Monte Carlo, whose variance is
@@ -513,7 +513,8 @@ end
 
 """
     patch_adjacent_pairs_duffy!(raw, coords, elems, nquad, mesh_dim,
-                                 bvh_for=(gi,gj)->nothing; factor=3.0)
+                                 bvh_for=(gi,gj)->nothing; factor=3.0,
+                                 pairs=nothing)
 
 Overwrite `raw[i,j]` and `raw[j,i]` (the raw, pre-area-division double
 integral, symmetric in `i,j`) for every pair within `factor` element-sizes
@@ -529,6 +530,14 @@ for a pair of element groups — obstruction geometry lives outside `elems`
 (e.g. a baffle group passed via `obstruction_groups`), so proximity between
 `i` and `j` alone does not imply an unobstructed path between them; the
 default no-op ignores obstruction entirely.
+
+`pairs`, if given, is used instead of recomputing `near_pairs` — the caller
+(the CPU assembly loop) already needs this list to skip these pairs in the
+O(N²) Monte Carlo bulk, so it is computed once and passed through rather than
+built twice. Each pair is independent (distinct `(i,j)` entries in `raw`), so
+the patch is applied with `Threads.@threads`; `bvh_for`'s own cache is
+lock-guarded (see `build_bvh_lookup` in `Assembly.jl`) so this is safe to call
+from multiple threads.
 """
 function patch_adjacent_pairs_duffy!(raw::Matrix{Float64},
                                       coords::Matrix{Float64},
@@ -536,9 +545,12 @@ function patch_adjacent_pairs_duffy!(raw::Matrix{Float64},
                                       nquad::Int,
                                       mesh_dim::Int,
                                       bvh_for::Function = (gi, gj) -> nothing;
-                                      factor::Float64 = 3.0)
+                                      factor::Float64 = 3.0,
+                                      pairs::Union{Nothing,Vector{Tuple{Int,Int}}} = nothing)
     mesh_dim == 1 && return raw
-    for (i, j) in near_pairs(coords, elems; factor=factor)
+    prs = pairs === nothing ? near_pairs(coords, elems; factor=factor) : pairs
+    Threads.@threads for k in eachindex(prs)
+        i, j = prs[k]
         bvh = bvh_for(elems[i].group, elems[j].group)
         raw_ij, _ = element_pair_view_factor_duffy(coords, elems[i], elems[j],
                                                      nquad, bvh, mesh_dim)

@@ -217,11 +217,18 @@ end
     sample_element_mc(coords, elem, n, rng) -> ElementSamples
 
 Draw and cache `n` stratified samples on `elem` for reuse across pairs.
+
+The samples are stored in a uniformly random order (one `randperm` draw),
+not the stratum-scan order `_sample_element` produces them in. This is what
+lets the pair integrator below pair same-index samples of two elements
+directly — see [`element_pair_view_factor_mc`](@ref) for why that is both
+faster and lower-variance than the per-sample random index it replaces.
 """
 function sample_element_mc(coords::Matrix{Float64}, elem::SurfaceElement,
                             n::Int, rng::AbstractRNG)::ElementSamples
     xs, ns, dAs, A = _sample_element(coords, elem, n, rng)
-    return ElementSamples(xs, ns, dAs, A, _ref_area(elem), n)
+    perm = randperm(rng, n)
+    return ElementSamples(xs[perm], ns[perm], dAs[perm], A, _ref_area(elem), n)
 end
 
 # Inline Tri6 point/normal/dA (avoids circular import with ViewFactorKernel)
@@ -276,14 +283,39 @@ end
 
 Fast path used by the assembly loop: estimate the raw double integral from
 pre-drawn samples ([`sample_element_mc`](@ref)). `si` and `sj` must hold the
-same number of samples.
+same number of samples. `rng` is accepted but unused — all randomness for
+this pair was already spent when `si` and `sj` were drawn.
 
-Both sample sets are stratified in the same deterministic stratum order, so
-pairing them by index would sample only the "diagonal" stratum blocks of the
-product domain and bias the estimate.  Instead, each sample of `si` is paired
-with a uniformly random sample of `sj` (drawn from `rng`): a random stratum
-plus its stratified jitter is exactly uniform on the element, so every pair
-term is unbiased while xᵢ keeps its stratification.
+Both sample sets are stratified in the same deterministic stratum order and
+then stored in a uniformly random (`randperm`) order, so the k-th stored
+sample of an element is uniform over the element, independent of `k`. Pairing
+same-index samples (`xᵢ[k]` with `xⱼ[k]`) therefore pairs each `xᵢ[k]` with a
+uniformly random `xⱼ`, exactly like the per-sample random index this
+replaced — but reads both arrays sequentially, which is faster and
+(measured) *lower*-variance than the per-sample index.
+
+!!! note "Why this differs from the single-offset approach that was rejected"
+    An earlier version drew `xⱼ`'s partner as `rand(rng, 1:n)` per sample —
+    correct, but the dominant cost of the loop, since indexing `sj` out of
+    order defeats prefetching (~2.2x slower than sequential access,
+    measured). A single random cyclic offset per pair is equally unbiased
+    and just as fast as this sequential scheme, but was rejected: it
+    preserves the *adjacency* between neighbouring stratum indices (a shift
+    keeps neighbours as neighbours), so if the integrand varies smoothly
+    across the element the shift correlates nearby terms and the per-pair
+    standard deviation rose ~30x in that experiment (7.5e-6 → 2.4e-4 over
+    40 seeds on a reactor-pin Quad8 pair).
+
+    A `randperm` is a different kind of single random draw: it is one of
+    `n!` bijections rather than one of `n` shifts, and — unlike a shift —
+    it does not preserve adjacency between stratum indices, so it does not
+    reproduce that correlation. Measured on the same kind of pair, the
+    per-pair standard deviation with this scheme is *lower* than the
+    original per-sample-random-index version (about 5x lower on a Quad8
+    pair, 1.0e-4 vs 5.0e-4 relative), and full-assembly comparisons against
+    the Howell catalog (`benchmarks/howell/`) across Quad8, Tri6 and Line3
+    element families, obstructed and unobstructed, show equal or lower
+    noise at the same `n_samples`. See `changelog.md` for the measurements.
 """
 function element_pair_view_factor_mc(si      ::ElementSamples,
                                       sj      ::ElementSamples,
@@ -299,13 +331,11 @@ function element_pair_view_factor_mc(si      ::ElementSamples,
 
     K_sum = 0.0
     @inbounds for k in 1:n
-        # Pair the k-th (stratified) sample of element i with a uniformly
-        # random sample of element j — uniform over the pre-drawn set is
-        # exactly uniform on the element.
-        kj = rand(rng, 1:n)
-
-        xi = xs_i[k];  ni = ns_i[k];  dAi = dAs_i[k]
-        xj = xs_j[kj]; nj = ns_j[kj]; dAj = dAs_j[kj]
+        # Same-index pairing: both arrays are already in a uniformly random
+        # (randperm'd) order, so this pairs xᵢ[k] with a uniformly random
+        # xⱼ — see the docstring above.
+        xi = xs_i[k]; ni = ns_i[k]; dAi = dAs_i[k]
+        xj = xs_j[k]; nj = ns_j[k]; dAj = dAs_j[k]
 
         K = is_2d ? _kernel_2d(xi, ni, xj, nj) :
                     _kernel_3d(xi, ni, xj, nj)

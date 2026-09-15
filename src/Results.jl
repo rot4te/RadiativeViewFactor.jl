@@ -118,6 +118,12 @@ end; export check_reciprocity
 
 Verify that no row of `F_elem` sums to more than 1 + `tol`.
 Prints the row-sum range and returns `true` if the check passes.
+
+Only meaningful for a closed enclosure. A result computed with
+`compute_view_factors(...; radiating_groups=...)` is deliberately open — the
+non-radiating bodies absorb their share but are never assembled — so its rows
+sum to less than 1 by construction and a low row sum is not a defect. Use
+[`check_reciprocity`](@ref), which is unaffected, to validate such a result.
 """
 function check_closure(result::ViewFactorResult; tol::Float64=1e-3)::Bool
     row_sums = vec(sum(result.F_elem, dims=2))

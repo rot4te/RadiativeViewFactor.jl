@@ -69,22 +69,41 @@ kernel diverges as ``r \to 0``. Near the singularity:
 K \sim \frac{1}{r^2}, \quad r \sim \sqrt{(u-u_0)^2+(v-v_0)^2+(s-s_0)^2+(t-t_0)^2}
 ```
 
-The Duffy transformation introduces a radial coordinate ``\rho`` and angular
-variables ``\eta_1, \eta_2, \eta_3 \in [0,1]``. The Jacobian of the 4D
-transformation is ``\rho^3``, which cancels the ``1/r^2`` divergence (since
-``r \sim \rho`` near the singular corner):
+The implementation uses an elementary "biggest-coordinate" Duffy
+decomposition (a generalization of Duffy's original single-simplex
+transform), not the specific region formulas of Sauter & Schwab's boundary
+element method — a related but different decomposition of the same
+singularity, and still the reference for the underlying idea.
+
+**Common vertex** (one shared corner node): shift coordinates to
+``\tilde u = u-u_0``, etc., so the singularity sits at the origin of
+``[0,1]^4``. Split the hypercube into **4 regions** by which of
+``(\tilde u, \tilde v, \tilde s, \tilde t)`` has the largest magnitude; in
+each region that coordinate is set to a radial variable ``\rho \in [0,1]``
+and the other three to ``\rho \eta_k`` (``\eta_k \in [0,1]``), giving a
+lower-triangular Jacobian with determinant ``\rho^3``:
 
 ```math
 K \cdot dA_i \cdot dA_j \cdot |\text{Jac}| \sim \frac{1}{\rho^2} \cdot \rho^2 \cdot \rho^3 = \rho^3 \to 0
 \quad \text{as } \rho \to 0
 ```
 
-The transformed integrand is smooth at ``\rho = 0`` and is efficiently resolved
-by standard Gauss–Legendre quadrature. The Sauter–Schwab decomposition (§5.3 of
-Sauter & Schwab, 2011) provides the specific change of variables:
+The 4 regions exactly tile ``[0,1]^4`` (ties between coordinates have measure
+zero), each contributing ``4 \times nquad^4`` total evaluation points.
 
-- **Common vertex:** 8 regions, each mapped to ``[0,1]^4``
-- **Common edge:** 5 regions, each mapped to ``[0,1]^4``
+**Common edge** (two shared corner nodes): in edge-local coordinates the
+singularity is the *line* ``u=s,\, v=t=0`` rather than a single point. Split
+the ``(u,s)`` square into the two triangles ``u \geq s`` and ``u < s``
+(Jacobian ``u`` or ``s`` respectively, a standard ratio parametrization);
+within each triangle the remaining three-variable point singularity
+``(w, v, t) \to 0`` (where ``w = (u-s)/u`` or ``(s-u)/s``) is resolved the
+same "biggest-coordinate" way, now with **3 regions** and Jacobian
+``\rho^2``. This gives **6 regions total** (2 triangles × 3 sub-regions),
+each contributing ``6 \times nquad^4`` total evaluation points, with combined
+Jacobian ``(u\text{ or }s) \cdot \rho^2``.
+
+The transformed integrand is smooth at ``\rho = 0`` in both cases and is
+efficiently resolved by standard Gauss–Legendre quadrature.
 
 ## Monte Carlo estimator
 
@@ -108,3 +127,39 @@ Carlo, matching the rate of a 1D Gauss rule.
 MC estimator is proportional to ``\iint K^2 \, dA``, which diverges at shared
 edges. Infinite variance means no amount of increasing ``N`` gives reliable
 convergence — use the Duffy transformation instead for such pairs.
+
+## Ray-shooting Monte Carlo estimator
+
+A second, unrelated Monte Carlo estimator (`raytrace=true`) rewrites the
+double-area integral as a single-area integral over the (occlusion-limited)
+solid angle ``\Omega_j`` that surface ``j`` subtends from each point
+``x \in A_i``:
+
+```math
+F_{i \to j} = \frac{1}{A_i} \int_{A_i}
+    \left[ \int_{\Omega_j \text{ visible from } x} \frac{\cos\theta_i}{\pi} \, d\Omega \right] dA_i
+```
+
+which follows from the solid-angle identity ``dA_j \cos\theta_j / r^2 = d\Omega``.
+Drawing a ray direction ``\omega`` from the cosine-weighted hemisphere pdf
+``\cos\theta_i / \pi`` gives
+
+```math
+\mathbb{E}\big[\mathbb{1}(\text{ray's first hit is } j)\big]
+    = \int_{\Omega_j \text{ visible}} \frac{\cos\theta_i}{\pi} \, d\Omega = F_{x \to j}
+```
+
+— the hit indicator's expectation is *exactly* the point-to-area form
+factor, occlusion included, with no ``\cos\theta_j``, no ``1/r^2``, and no
+separate visibility test: a ray hitting the wrong surface first *is* the
+visibility test. Averaging over points ``x`` drawn uniformly by area on
+``A_i`` gives ``F_{i \to j}`` directly.
+
+Because this estimator never evaluates ``1/r^2``, it has ordinary bounded
+(binomial) variance for every element pair, including adjacent ones — no
+Duffy patch is applied. Each unordered pair ``\{i,j\}`` gets two independent
+estimates (one from each element's own rays); `Assembly.jl` averages them
+before dividing back out to ``F``, which enforces reciprocity by
+construction rather than as an emergent property of enough samples. See
+`src/RayTraceKernel.jl`'s module docstring for the full derivation and a
+front/back-face subtlety found while implementing it.

@@ -37,8 +37,8 @@ module GPUBVH
 
 using StaticArrays
 
-import ..BVH: BVHTree, build_bvh
-
+import ..BVH:           BVHTree, build_bvh
+import ..RayTraceKernel: build_scene_bvh   # ray-shooting scene builder (see build_flat_scene_bvh below)
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +173,31 @@ function build_flat_bvh_from_mesh(mesh,
     return build_flat_bvh(build_bvh(merged), group_tags, FloatT, ArrayT)
 end; export build_flat_bvh_from_mesh
 
+"""
+    build_flat_scene_bvh(mesh, obstruction_groups, FloatT, ArrayT) -> FlatBVH
+
+Build and flatten the ray-shooting *scene* BVH (see `RayTraceKernel.jl`):
+every radiating element (`mesh.surface_elems`), tagged with its own 1-based
+index, plus any `obstruction_groups` geometry not already part of the
+radiating set (tagged `0`, a non-radiating opaque blocker) — reusing the CPU
+scene builder ([`RayTraceKernel.build_scene_bvh`](@ref)) so the triangulation
+and tagging logic isn't duplicated. This is a different BVH from
+[`build_flat_bvh_from_mesh`](@ref)'s: that one holds only
+`obstruction_groups` geometry with *physical group tags* (for the pair
+kernels' any-hit visibility test against a specific emitter/receiver pair);
+this one holds the whole scene with *element indices* (for
+`GPURayTraceKernels.jl`'s nearest-hit query, which needs to know not just
+"blocked?" but "blocked by which element?"). `FlatBVH`'s `tri_group` field
+is reused to carry the element index here — the field name doesn't change,
+only what a GPU kernel does with the tag it gets back.
+"""
+function build_flat_scene_bvh(mesh, obstruction_groups::Vector{Int},
+                               ::Type{FloatT}, ArrayT) where FloatT
+    scene = build_scene_bvh(mesh.coords, mesh.surface_elems,
+                             mesh.group_tri_soup, obstruction_groups)
+    return build_flat_bvh(scene.bvh, Int32.(scene.elem_of), FloatT, ArrayT)
+end; export build_flat_scene_bvh
+
 # ---------------------------------------------------------------------------
 # Stackless GPU BVH traversal
 #
@@ -291,5 +316,129 @@ const _GPU_BARY_EPS = 1f-6   # Float32 literal; cast to T inside the function
 
     return false
 end; export gpu_intersect_bvh
+
+# ---------------------------------------------------------------------------
+# Stackless nearest-hit GPU BVH traversal — for ray-shooting (see
+# GPURayTraceKernels.jl), not the pair kernels above. `gpu_intersect_bvh`
+# only answers "is anything in the way" (any-hit, short-circuits on the
+# first hit found); ray-shooting needs to know *what* the ray landed on, so
+# this keeps scanning and shrinks `t_max` to the closest `t` found so far
+# (the standard nearest-hit pruning — same optimization the CPU
+# `nearest_hit_bvh` in BVH.jl uses).
+#
+# `bvh_tri_elem` here is `FlatBVH.tri_group` reinterpreted as a per-triangle
+# *element index* (see `build_flat_scene_bvh`), not a physical group tag:
+# `skip_elem` excludes only the ray's own origin element (compare `==`, not
+# `∈ {group_i, group_j}` the way `gpu_intersect_bvh` does for pair
+# exclusion) — element 0 (a non-radiating blocker) is never skipped, since a
+# ray must still be able to hit it.
+#
+# No winding/normal culling in the traversal itself, same convention as
+# `gpu_intersect_bvh`: an opaque triangle blocks a ray regardless of which
+# face it's hit from. The front/back-face classification the caller needs
+# (see `RayTraceKernel.jl`'s module docstring for why: a back-face hit
+# blocks the ray but isn't a valid target) is computed here anyway, on
+# whichever triangle wins, since its vertices are already in registers —
+# `front` is the sign of `dot(cross(e1,e2), -direction)`, which needs no
+# normalization (sign is scale-invariant).
+#
+# Returns `(hit::Bool, elem::Int32, front::Bool)`. `elem` and `front` are
+# only meaningful when `hit` is true.
+# ---------------------------------------------------------------------------
+
+@inline function gpu_nearest_hit_bvh(bvh_lo, bvh_hi, bvh_meta,
+                                      bvh_tri_idx, bvh_tris, bvh_tri_elem,
+                                      ox::T, oy::T, oz::T,
+                                      dx::T, dy::T, dz::T,
+                                      skip_elem::Int32)::Tuple{Bool,Int32,Bool} where T
+
+    inv_dx = T(1) / dx
+    inv_dy = T(1) / dy
+    inv_dz = T(1) / dz
+    t_eps  = T(_GPU_T_EPS)
+    b_eps  = T(_GPU_BARY_EPS)
+
+    best_t     = T(Inf)
+    best_elem  = Int32(0)
+    best_front = false
+    found      = false
+
+    nidx = 1   # start at root
+
+    @inbounds while nidx > 0
+
+        t1x = (T(bvh_lo[1, nidx]) - ox) * inv_dx
+        t2x = (T(bvh_hi[1, nidx]) - ox) * inv_dx
+        t1y = (T(bvh_lo[2, nidx]) - oy) * inv_dy
+        t2y = (T(bvh_hi[2, nidx]) - oy) * inv_dy
+        t1z = (T(bvh_lo[3, nidx]) - oz) * inv_dz
+        t2z = (T(bvh_hi[3, nidx]) - oz) * inv_dz
+
+        tentry = max(min(t1x, t2x), min(t1y, t2y), min(t1z, t2z), T(0))
+        texit  = min(max(t1x, t2x), max(t1y, t2y), max(t1z, t2z), best_t)
+
+        if tentry <= texit   # AABB hit (within the closest t found so far)
+
+            tri_count = Int(bvh_meta[4, nidx])
+
+            if tri_count > 0   # leaf node — test triangles
+                tri_start = Int(bvh_meta[3, nidx])
+                for k in tri_start : tri_start + tri_count - 1
+                    tidx = Int(bvh_tri_idx[k])
+
+                    Int32(bvh_tri_elem[tidx]) == skip_elem && continue
+
+                    v0x = T(bvh_tris[1, 1, tidx]);  v0y = T(bvh_tris[2, 1, tidx]);  v0z = T(bvh_tris[3, 1, tidx])
+                    v1x = T(bvh_tris[1, 2, tidx]);  v1y = T(bvh_tris[2, 2, tidx]);  v1z = T(bvh_tris[3, 2, tidx])
+                    v2x = T(bvh_tris[1, 3, tidx]);  v2y = T(bvh_tris[2, 3, tidx]);  v2z = T(bvh_tris[3, 3, tidx])
+
+                    e1x = v1x-v0x;  e1y = v1y-v0y;  e1z = v1z-v0z
+                    e2x = v2x-v0x;  e2y = v2y-v0y;  e2z = v2z-v0z
+
+                    hx = dy*e2z - dz*e2y
+                    hy = dz*e2x - dx*e2z
+                    hz = dx*e2y - dy*e2x
+                    a  = e1x*hx + e1y*hy + e1z*hz
+                    abs(a) < T(1e-10) && continue
+
+                    f  = T(1) / a
+                    sx = ox-v0x;  sy = oy-v0y;  sz = oz-v0z
+                    u  = f * (sx*hx + sy*hy + sz*hz)
+                    (u < -b_eps || u > T(1)+b_eps) && continue
+
+                    qx = sy*e1z - sz*e1y
+                    qy = sz*e1x - sx*e1z
+                    qz = sx*e1y - sy*e1x
+                    v  = f * (dx*qx + dy*qy + dz*qz)
+                    (v < -b_eps || u+v > T(1)+b_eps) && continue
+
+                    t = f * (e2x*qx + e2y*qy + e2z*qz)
+                    if t > t_eps && t < best_t
+                        # Triangle normal via e1 × e2 (same winding convention
+                        # as CPU's `_tri_normal`); un-normalized is fine, only
+                        # the sign of the dot product below matters.
+                        nx = e1y*e2z - e1z*e2y
+                        ny = e1z*e2x - e1x*e2z
+                        nz = e1x*e2y - e1y*e2x
+                        best_t     = t
+                        best_elem  = Int32(bvh_tri_elem[tidx])
+                        best_front = (nx*(-dx) + ny*(-dy) + nz*(-dz)) > T(0)
+                        found      = true
+                    end
+                end
+                nidx = Int(bvh_meta[5, nidx])
+
+            else   # interior node — descend into left child
+                nidx = Int(bvh_meta[1, nidx])
+            end
+
+        else   # AABB miss — skip entire subtree
+            nidx = Int(bvh_meta[5, nidx])
+        end
+
+    end   # while nidx > 0
+
+    return found, best_elem, best_front
+end; export gpu_nearest_hit_bvh
 
 end # module GPUBVH

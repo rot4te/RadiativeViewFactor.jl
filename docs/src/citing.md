@@ -12,7 +12,7 @@ generates formatted citations automatically from the `CITATION.cff` file.
   author  = {Coxe, Alexander M.},
   title   = {{RadiativeViewFactor.jl}},
   url     = {https://github.com/rot4te/RadiativeViewFactor.jl},
-  version = {0.5.0},
+  version = {0.6.3},
   year    = {2026}
 }
 ```
@@ -23,17 +23,12 @@ The numerical methods implemented in this package are described in the
 following works. Please also consider citing the relevant references when
 using specific features:
 
-**Duffy transformation** (`use_duffy=true`):
+**Duffy transformation** (`use_duffy=true`, and the automatic near-pair patch
+under `monte_carlo=true`): the implementation is a "biggest-coordinate"
+generalization of Duffy's original transform, not the Sauter–Schwab region
+formulas — the latter is included below as related background reading.
 
 ```bibtex
-@book{sauter_schwab_2011,
-  author    = {Sauter, Stefan A. and Schwab, Christoph},
-  title     = {Boundary Element Methods},
-  publisher = {Springer},
-  year      = {2011},
-  doi       = {10.1007/978-3-540-68093-2}
-}
-
 @article{duffy_1982,
   author  = {Duffy, M. G.},
   title   = {Quadrature over a pyramid or cube of integrands with a
@@ -44,6 +39,14 @@ using specific features:
   pages   = {1260--1262},
   year    = {1982},
   doi     = {10.1137/0719090}
+}
+
+@book{sauter_schwab_2011,
+  author    = {Sauter, Stefan A. and Schwab, Christoph},
+  title     = {Boundary Element Methods},
+  publisher = {Springer},
+  year      = {2011},
+  doi       = {10.1007/978-3-540-68093-2}
 }
 ```
 

@@ -9,27 +9,32 @@ using KernelAbstractions
 include("MeshIO.jl")
 include("Quadrature.jl")
 include("Geometry.jl")
+include("ElementBounds.jl")  # conservative per-element sphere + normal cone
 include("BVH.jl")
 include("RayCast.jl")
 include("ViewFactorKernel.jl")
 include("DuffyKernel.jl")   # Sauter-Schwab Duffy transformation for singular pairs
-include("MCKernel.jl")      # CPU Monte Carlo integrator
+include("MCKernel.jl")      # CPU Monte Carlo integrator (pair-area sampling)
+include("RayTraceKernel.jl") # CPU Monte Carlo integrator (ray-shooting)
 include("Results.jl")       # ViewFactorResult, _aggregate — no upstream deps
 include("NekExport.jl")     # write_nekrs_view_factors — depends on MeshIO + Results
 include("GPUBVH.jl")
 include("GPUKernels.jl")
-include("GPUMCKernels.jl")  # GPU Monte Carlo kernel
+include("GPUMCKernels.jl")       # GPU Monte Carlo kernel (pair-area sampling)
+include("GPURayTraceKernels.jl") # GPU Monte Carlo kernel (ray-shooting)
 include("Assembly.jl")      # imports Results; defines register_gpu_hook!
 include("GPUAssembly.jl")   # imports Results + Assembly.register_gpu_hook!;
                              # calls register_gpu_hook!(compute_view_factors_gpu)
 
-using .MeshIO:    load_mesh, load_re2, MeshData
+using .MeshIO:    load_mesh, load_re2, load_vtu, MeshData
 using .MeshIO:    SurfaceElement
-using .MeshIO:    split_groups_by_tag
+using .MeshIO:    split_groups_by_tag, restrict_to_radiating, reverse_group_normals
 using .Geometry:  quad8_physical_point, quad8_normal_and_area_element,
                   quad4_shape, quad4_physical_point, quad4_normal_and_area_element,
                   line2_shape, line2_physical_point, line2_normal_and_length_element,
                   line3_physical_point, line3_normal_and_length_element
+using .ElementBounds: ElementBound, build_element_bound, build_element_bounds,
+                      pair_can_see
 using .Results:   ViewFactorResult, aggregate_by_group,
                   check_reciprocity, check_closure
 using .Assembly:  compute_view_factors
@@ -37,6 +42,7 @@ using .NekExport: write_nekrs_view_factors
 
 export load_mesh,
        load_re2,
+       load_vtu,
        compute_view_factors,
        aggregate_by_group,
        check_reciprocity,
@@ -46,6 +52,8 @@ export load_mesh,
        MeshData,
        SurfaceElement,
        split_groups_by_tag,
+       restrict_to_radiating,
+       reverse_group_normals,
        ViewFactorResult,
        quad8_physical_point,
        quad8_normal_and_area_element,

@@ -41,6 +41,7 @@ using LinearAlgebra: dot, cross, norm
 
 import ..GPUBVH: gpu_intersect_bvh, FlatBVH
 import ..Quadrature: gauss_legendre_2d
+import ..GPUKernels: gpu_pair_can_see
 
 export build_gpu_mc_arrays, launch_mc_kernel!
 
@@ -248,7 +249,9 @@ end
                                    bvh_tri_idx, bvh_tris, bvh_tri_group,
                                    row_offset::Int32,
                                    row_hi::Int32,
-                                   N::Int)
+                                   N::Int,
+                                   elem_blo, elem_bhi, elem_nlo, elem_nhi,
+                                   facing_cull::Bool)
     ig, jg = @index(Global, NTuple)
     # Work in 32-bit index space: Apple GPUs emulate 64-bit integer math, so
     # keeping our own index arithmetic in Int32 avoids that tax.  (Array-stride
@@ -281,6 +284,15 @@ end
     rng_state = ifelse(rng_state == UInt32(0), UInt32(0x9E3779B9), rng_state)
 
     Ai = zero(T); Aj = zero(T); K_sum = zero(T)
+
+    # Conservative facing test (see ElementBounds). Unlike the quadrature
+    # kernel this cannot skip the sample loops outright: `area_out` is
+    # estimated from these very samples, and an element whose every pair was
+    # rejected would end up with no area at all and a NaN row. Skipping the
+    # kernel/BVH evaluation is where the cost is anyway — especially with
+    # obstruction on, where it is a ray cast per sample.
+    do_kernel = !facing_cull ||
+        gpu_pair_can_see(elem_blo, elem_bhi, elem_nlo, elem_nhi, i, j)
 
     # unsafe_trunc avoids the checked Float→Int conversion (which boxes/heap
     # -allocates on GPUs); sqrt(n_samples) ≥ 0 so trunc == floor here.
@@ -315,9 +327,11 @@ end
                                              u3, u4)
             Aj += dAj
 
-            K = _vf_contribution(xi, nni, xj, nnj, use_bvh,
+            K = do_kernel ?
+                _vf_contribution(xi, nni, xj, nnj, use_bvh,
                                   bvh_lo, bvh_hi, bvh_meta,
-                                  bvh_tri_idx, bvh_tris, bvh_tri_group, gi, gj)
+                                  bvh_tri_idx, bvh_tris, bvh_tri_group, gi, gj) :
+                zero(T)
             K_sum += K * dAi * dAj
         end
     end
@@ -331,9 +345,11 @@ end
         u4, rng_state = _xorshift32(rng_state, T)
         xj, nnj, dAj  = _sample_prepared(pe_j, coords, nodes_quad, nodes_tri, u3, u4)
         Ai += dAi; Aj += dAj
-        K = _vf_contribution(xi, nni, xj, nnj, use_bvh,
+        K = do_kernel ?
+            _vf_contribution(xi, nni, xj, nnj, use_bvh,
                               bvh_lo, bvh_hi, bvh_meta,
-                              bvh_tri_idx, bvh_tris, bvh_tri_group, gi, gj)
+                              bvh_tri_idx, bvh_tris, bvh_tri_group, gi, gj) :
+            zero(T)
         K_sum += K * dAi * dAj
     end
 
@@ -379,6 +395,7 @@ function launch_mc_kernel!(ga, backend;
                              groupsize ::Int     = 16,
                              flat_bvh           = nothing,
                              max_chunk_seconds::Real = 1.0,
+                             facing_cull::Bool   = true,
                              verbose   ::Bool    = false)
     N      = ga.N
     FloatT = ga.FloatT
@@ -425,7 +442,8 @@ function launch_mc_kernel!(ga, backend;
               ga.elem_family, ga.elem_node_idx,
               n_samples, seed, use_bvh,
               bvh_lo, bvh_hi, bvh_meta, bvh_tri_idx, bvh_tris, bvh_tri_grp,
-              Int32(row0), Int32(row0 + rows), N;
+              Int32(row0), Int32(row0 + rows), N,
+              ga.elem_blo, ga.elem_bhi, ga.elem_nlo, ga.elem_nhi, facing_cull;
               ndrange=(rows, N))
         KernelAbstractions.synchronize(backend)
         dt = time() - t0

@@ -36,8 +36,8 @@ keywords:
   - GPU
   - heat transfer
 license: MIT
-version: "0.5.0"
-date-released: "2025-06-08"
+version: "0.6.3"
+date-released: "2026-09-14"
 references:
   - type: book
     title: "Thermal Radiation Heat Transfer"

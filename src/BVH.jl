@@ -295,6 +295,81 @@ function intersect_ray_bvh(bvh      ::BVHTree,
     return false
 end; export intersect_ray_bvh
 
+"""
+    nearest_hit_bvh(bvh, origin, direction; t_min=0.0, skip=Returns(false))
+        -> (tri_idx::Int, t::Float64)
+
+Return the index (into `bvh.tri_soup`/`bvh.tri_idx`-permuted leaves — i.e.
+the same `tidx` convention `intersect_ray_bvh` uses internally, not a
+sorted position) and ray parameter `t` of the *closest* triangle the ray
+`origin + t*direction` hits for `t > t_min`, or `(0, Inf)` if none.
+
+Unlike [`intersect_ray_bvh`](@ref) (any-hit, used for pure blocking
+queries), this returns *which* triangle was hit and how far — needed by
+ray-tracing view-factor kernels (`RayTraceKernel.jl`) to know *what* the
+ray landed on, not just whether the path to some other known point is
+blocked. Same standard nearest-hit optimization as any BVH/BSP traversal:
+`t_max` for the AABB test shrinks to the best `t` found so far, so once one
+hit is found, subtrees that cannot contain anything closer are pruned.
+
+No winding/normal culling, same convention as `intersect_ray_bvh`: an
+opaque triangle blocks a ray regardless of which face it's hit from — it's
+the caller's job to decide whether a front- or back-face hit is a valid
+target (see `RayTraceKernel.jl`'s own front-face check, done using the
+*element's* normal, not just this raw geometric hit).
+
+`skip(tri_idx)` is evaluated only for triangles inside a reached leaf (so a
+skipped triangle's AABB culling benefit isn't lost) and lets a candidate be
+excluded from consideration entirely — e.g. skip the ray's own origin
+element, whose surface it starts exactly on, without relying on a `t_min`
+epsilon (which "adjacent element, near-tangent ray" cases can defeat — the
+`t` at a self-hit is only ever *near* zero due to floating point, not
+reliably distinguishable from a genuine nearby hit at the same scale).
+"""
+function nearest_hit_bvh(bvh      ::BVHTree,
+                          origin   ::SVector{3,Float64},
+                          direction::SVector{3,Float64};
+                          t_min::Float64 = 0.0,
+                          skip::F = Returns(false))::Tuple{Int,Float64} where F
+    inv_d = SVector(1.0/direction[1], 1.0/direction[2], 1.0/direction[3])
+
+    stack    = zeros(Int, 64)
+    stack[1] = 1
+    sp       = 1
+    best_t   = Inf
+    best_tri = 0
+
+    @inbounds while sp > 0
+        nidx = stack[sp];  sp -= 1
+        node = bvh.nodes[nidx]
+
+        _ray_aabb(origin, direction, inv_d, node.aabb, best_t) || continue
+
+        if node.left == 0   # leaf
+            for k in node.tri_start : node.tri_start + node.tri_count - 1
+                tidx = bvh.tri_idx[k]
+                skip(tidx) && continue
+                v0 = SVector{3,Float64}(bvh.tri_soup[1,1,tidx],
+                                         bvh.tri_soup[2,1,tidx],
+                                         bvh.tri_soup[3,1,tidx])
+                v1 = SVector{3,Float64}(bvh.tri_soup[1,2,tidx],
+                                         bvh.tri_soup[2,2,tidx],
+                                         bvh.tri_soup[3,2,tidx])
+                v2 = SVector{3,Float64}(bvh.tri_soup[1,3,tidx],
+                                         bvh.tri_soup[2,3,tidx],
+                                         bvh.tri_soup[3,3,tidx])
+                t = _ray_triangle(origin, direction, v0, v1, v2, t_min)
+                if t < best_t
+                    best_t = t; best_tri = tidx
+                end
+            end
+        else
+            sp += 1;  stack[sp] = node.left
+            sp += 1;  stack[sp] = node.right
+        end
+    end
+    return best_tri, best_t
+end; export nearest_hit_bvh
 
 # ---------------------------------------------------------------------------
 # 2-D ray–segment intersection and BVH traversal for curve meshes

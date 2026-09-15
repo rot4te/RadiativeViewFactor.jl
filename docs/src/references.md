@@ -17,11 +17,11 @@ The following works informed the numerical methods implemented in this package.
 
 ## Singularity treatment (Duffy transformation)
 
-- Sauter, S. A., & Schwab, C. (2011). *Boundary Element Methods*. Springer.
-  — Sauter–Schwab common-vertex (§5.3.2) and common-edge (§5.3.3) decompositions; the primary reference for the 4D Duffy regularization implemented in `DuffyKernel.jl`.
-
 - Duffy, M. G. (1982). Quadrature over a pyramid or cube of integrands with a singularity at a vertex. *SIAM Journal on Numerical Analysis*, 19(6), 1260–1262.
-  — Original Duffy transformation; the foundational technique underlying the Sauter–Schwab decompositions.
+  — Original Duffy transformation. `DuffyKernel.jl` implements an elementary "biggest-coordinate" generalization of this single-simplex transform (4 regions for a common vertex, 6 for a common edge), not the specific Sauter–Schwab region formulas below.
+
+- Sauter, S. A., & Schwab, C. (2011). *Boundary Element Methods*. Springer.
+  — Sauter–Schwab common-vertex (§5.3.2) and common-edge (§5.3.3) decompositions; a related but distinct 4D Duffy-type regularization for the same singularity, kept here as background reading rather than as the implemented method.
 
 ## Gaussian quadrature
 
@@ -45,6 +45,9 @@ The following works informed the numerical methods implemented in this package.
 
 - Pharr, M., Jakob, W., & Humphreys, G. (2023). *Physically Based Rendering: From Theory to Implementation* (4th ed.). MIT Press.
   — Stratified sampling, variance reduction, and Monte Carlo estimators for light transport integrals; basis for the stratified area-sampling scheme in `MCKernel.jl`.
+
+- Cohen, M. F., & Wallace, J. R. (1995). *Radiosity and Realistic Image Synthesis*. Academic Press.
+  — Source for the solid-angle identity ``dA_j \cos\theta_j / r^2 = d\Omega`` underlying the cosine-weighted ray-shooting estimator in `RayTraceKernel.jl` and `GPURayTraceKernels.jl`.
 
 ## GPU pseudo-random number generation
 

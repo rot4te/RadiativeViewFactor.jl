@@ -29,50 +29,168 @@ the *same* mesh, so the comparison isolates the kernel rather than mixing in a
 discretization difference. All error figures below are **percent error**,
 `100 × |computed − catalog| / catalog`.
 
+Cases whose extractors read only some of the mesh's physical groups are run
+with `radiating_groups`, so only those groups are assembled while every group
+still obstructs — see "Restricted assembly" below.
+
 ```bash
 julia --project=benchmarks -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmarks --threads=auto benchmarks/howell/run.jl
+julia --project=benchmarks --threads=auto benchmarks/howell/run_raytrace.jl   # third kernel, appends to the same results.csv
 ```
 
 Results are written to `results.csv` (as a fraction, not percent), one row
-per case per kernel.
+per case per kernel, with per-call runtimes and a commented system-information
+preamble. A third kernel, ray-shooting Monte Carlo (`raytrace=true`), is
+covered separately in [Ray-shooting Monte Carlo](#ray-shooting-monte-carlo)
+below — `run_raytrace.jl` shares the same case list (`cases.jl`) as
+`run.jl` but runs only that kernel, and only on the 3D cases it supports.
 
 ## Results
 
 115 parameter points across 22 catalog cases, each run with both kernels (230
 data points total). **Quadrature: 109/115 (95%) within 1%, median 0.005%.
-Monte Carlo (`n_samples=5000`): 110/115 (96%) within 1%, median 0.007%.**
+Monte Carlo (`n_samples=5000`): 110/115 (96%) within 1%, median 0.008%.**
 
 | Case  | Geometry                                    | Points | Quad median | Quad worst | MC median | MC worst |
 |-------|----------------------------------------------|-------:|--------:|--------:|--------:|--------:|
-| C-1   | Infinite parallel plates, equal width        |  4 | 1.2e-14% | 5.4e-14% | 2.8e-05% | 3.1e-04% |
+| C-1   | Infinite parallel plates, equal width        |  4 | 2.0e-14% | 5.4e-14% | 3.7e-05% | 3.1e-04% |
 | C-2   | Infinite parallel plates, unequal width       |  3 | 5.1e-14% | 7.9e-14% | 1.2e-04% | 1.6e-04% |
-| C-3   | Infinite perpendicular plates, common edge    |  4 | 0.011%   | 0.051%   | 0.033%   | 0.169%   |
-| C-4   | Infinite equal plates, common edge, angle α   |  4 | 0.051%   | 0.38%    | 0.027%   | 0.054%   |
-| C-8   | Infinite plane to two rows of tubes           |  6 | 0.17%    | 3.7%     | 0.17%    | 3.8%     |
-| C-10  | Rectangle to semi-infinite rectangle, angle   |  6 | 0.48%    | 3.3%     | 0.48%    | 3.3%     |
-| C-11  | Identical parallel opposed rectangles         |  4 | 2.8e-13% | 3.9e-13% | 4.7e-04% | 0.001%   |
-| C-14  | Perpendicular rectangles, common edge         |  4 | 0.010%   | 0.023%   | 0.007%   | 0.025%   |
-| C-33  | Hexagonal prism (6 face pairs × 3 L)          | 18 | 0.019%   | 0.86%    | 0.019%   | 0.86%    |
-| C-34  | Parallel regular polygons (n=3,4,5,6,8)       | 15 | 5.6e-04% | 0.50%    | 0.002%   | 0.50%    |
+| C-3   | Infinite perpendicular plates, common edge    |  4 | 0.018%   | 0.051%   | 0.034%   | 0.169%   |
+| C-4   | Infinite equal plates, common edge, angle α   |  4 | 0.079%   | 0.384%   | 0.032%   | 0.054%   |
+| C-8   | Infinite plane to two rows of tubes           |  6 | 0.379%   | 3.74%    | 0.369%   | 3.75%    |
+| C-10  | Rectangle to semi-infinite rectangle, angle   |  6 | 0.801%   | 3.31%    | 0.801%   | 3.31%    |
+| C-11  | Identical parallel opposed rectangles         |  4 | 3.2e-13% | 3.9e-13% | 6.2e-04% | 0.001%   |
+| C-14  | Perpendicular rectangles, common edge         |  4 | 0.011%   | 0.023%   | 0.009%   | 0.025%   |
+| C-33  | Hexagonal prism (6 face pairs × 3 L)          | 18 | 0.019%   | 0.862%   | 0.019%   | 0.862%   |
+| C-34  | Parallel regular polygons (n=3,4,5,6,8)       | 15 | 5.6e-04% | 0.498%   | 0.001%   | 0.500%   |
 | C-40  | Coaxial parallel disks, equal radius          |  3 | 3.1e-05% | 4.0e-05% | 0.002%   | 0.002%   |
 | C-41  | Coaxial parallel disks, unequal radius        |  3 | 5.0e-06% | 4.0e-05% | 2.3e-04% | 5.6e-04% |
-| C-63  | Concentric infinite cylinders                 |  3 | 4.3e-04% | 1.1e-03% | 6.7e-04% | 1.1e-03% |
-| C-68  | Infinite parallel cylinders, equal diameter   |  4 | 3.9e-05% | 1.2e-04% | 0.001%   | 0.007%   |
-| C-69  | Infinite parallel cylinders, unequal radius   |  3 | 8.5e-05% | 9.3e-05% | 1.9e-05% | 0.005%   |
-| C-72  | Cylinder in square array                      |  6 | 1.4e-03% | 0.021%   | 0.004%   | 0.060%   |
-| C-73  | Cylinder in triangular array                  |  6 | 3.7e-03% | 1.1%     | 0.012%   | 0.41%    |
+| C-63  | Concentric infinite cylinders                 |  3 | 4.3e-04% | 0.001%   | 2.1e-04% | 3.0e-04% |
+| C-68  | Infinite parallel cylinders, equal diameter   |  4 | 4.3e-05% | 1.2e-04% | 0.001%   | 0.006%   |
+| C-69  | Infinite parallel cylinders, unequal radius   |  3 | 8.5e-05% | 9.3e-05% | 0.003%   | 0.004%   |
+| C-72  | Cylinder in square array                      |  6 | 0.003%   | 0.021%   | 0.004%   | 0.061%   |
+| C-73  | Cylinder in triangular array                  |  6 | 0.004%   | 1.14%    | 0.008%   | 0.395%   |
 | C-79  | Cylinder base to inside lateral surface       |  3 | 0.015%   | 0.021%   | 0.015%   | 0.022%   |
-| C-109 | Cone interior to base                         |  3 | 0.21%    | 0.22%    | 0.21%    | 0.22%    |
-| C-125 | Sphere to coaxial disk                        |  4 | 0.002%   | 0.005%   | 0.002%   | 0.007%   |
+| C-109 | Cone interior to base                         |  3 | 0.206%   | 0.218%   | 0.205%   | 0.218%   |
+| C-125 | Sphere to coaxial disk                        |  4 | 0.002%   | 0.005%   | 0.001%   | 0.008%   |
 | C-135 | Concentric spheres                            |  3 | 0.025%   | 0.027%   | 0.025%   | 0.027%   |
-| C-137 | Two spheres of unequal radius                 |  6 | 0.21%    | 0.66%    | 0.21%    | 0.66%    |
+| C-137 | Two spheres of unequal radius                 |  6 | 0.259%   | 0.658%   | 0.259%   | 0.658%   |
+
+These figures are computed directly from `results.csv`. The worst-case column
+and both pass counts are unchanged from the previously published table; several
+*median* entries differ slightly because the earlier table was not regenerated
+from the same CSV.
 
 Coverage spans both solver paths — 2D per-unit-depth curve meshes (C-1 to C-4,
 C-8, C-63, C-68, C-69, C-72, C-73) and 3D surface meshes (the rest) — over
 planes, disks, cylinders, cones, spheres and polygon arrays, including opposed,
 perpendicular, enclosing, edge-sharing, mutually shadowing and multi-body
 obstruction configurations.
+
+A third kernel, ray-shooting Monte Carlo (`raytrace=true`), is covered
+separately below in [Ray-shooting Monte Carlo](#ray-shooting-monte-carlo) —
+it only supports 3D surface meshes, so it runs on 72 of the 115 points here,
+not all 115.
+
+## System
+
+The run recorded below, reproduced in the comment preamble of `results.csv`:
+
+| | |
+|---|---|
+| Date | 2026-09-14 14:09 |
+| CPU | Apple M3, 8 logical cores (4 performance + 4 efficiency) |
+| Julia threads | 8 |
+| Memory | 16 GB |
+| OS | Darwin arm64-apple-darwin25.5.0 |
+| Julia | 1.12.7 |
+| RadiativeViewFactor.jl | 0.6.2, commit `1a8508f` (working tree dirty) |
+| `n_samples` (MC) | 5000 |
+
+`results.csv` records the core count as `cpu_threads_julia_reports: 4` as well
+as `cpu_logical: 8`. Both are correct: `Sys.CPU_THREADS` counts only the
+performance cores on Apple Silicon, which is why the two disagree. The run used
+8 Julia threads.
+
+## Runtimes
+
+**Total wall time 6306 s (1 h 45 m)**, of which 565 s is quadrature and 5723 s
+Monte Carlo — the MC kernel costs **10x** quadrature over the suite as a whole.
+Times are per `compute_view_factors` call, measured after a warm-up case so
+they exclude first-call compilation.
+
+| Case | Points | Quad (s) | MC (s) | MC / quad |
+|------|-------:|------:|------:|------:|
+| C-10  |  6 | 491.03 | 3173.64 | 6 |
+| C-109 |  3 |  22.94 | 1165.20 | 51 |
+| C-8   |  6 |   9.37 |  603.81 | 64 |
+| C-33  | 18 |  17.55 |  163.71 | 9 |
+| C-34  | 15 |   5.23 |  165.69 | 32 |
+| C-135 |  3 |   0.80 |  134.91 | 169 |
+| C-79  |  3 |  13.20 |   95.35 | 7 |
+| C-125 |  4 |   1.07 |   80.57 | 75 |
+| C-41  |  3 |   2.08 |   76.56 | 37 |
+| C-137 |  6 |   0.39 |   26.55 | 69 |
+| C-40  |  3 |   0.43 |   17.08 | 40 |
+| C-11  |  4 |   0.20 |    8.33 | 41 |
+| C-14  |  4 |   0.95 |    5.66 | 6 |
+| C-72  |  6 |   0.03 |    1.07 | 35 |
+| C-73  |  6 |   0.06 |    1.03 | 18 |
+| C-3   |  4 |  <0.01 |    0.88 | 221 |
+| C-4   |  4 |  <0.01 |    0.86 | 216 |
+| C-1   |  4 |  <0.01 |    0.83 | 207 |
+| C-2   |  3 |  <0.01 |    0.56 | 188 |
+| C-63  |  3 |  <0.01 |    0.52 | 173 |
+| C-69  |  3 |  <0.01 |    0.12 | — |
+| C-68  |  4 |  <0.01 |    0.11 | 109 |
+
+Two things stand out. **C-10 alone is 58% of the whole suite** (3665 s of
+6306 s): its geometry meshes a semi-infinite rectangle as a finite one of width
+80, so the element count dwarfs every other case. And the **MC/quad ratio is
+worst on the cheapest cases** — over 200x on C-1 to C-4 — because MC's cost is
+`n_samples` point-pairs per element pair regardless of how simple the geometry
+is, whereas `nquad=6` quadrature costs `nquad⁴` = 1296 and scales down with the
+mesh. On the large, expensive cases the ratio falls to single digits.
+
+## Restricted assembly
+
+Three case families read only some of their mesh's physical groups, and are now
+run with `radiating_groups` so that only those groups are assembled while every
+group still obstructs:
+
+| Case | Radiating / loaded elements | Notes |
+|------|------|------|
+| C-72 | 144 / 1200 (all 6 points) | 5×5 array of 25 cylinders; extractors read groups 1–3 only |
+| C-73 | 144 / 1200 (all 6 points) | as C-72, triangular array |
+| C-33 | 157–1386 of 689–2135 (15 of 18 points) | hexagonal prism; each extraction reads a prefix of the six groups, so the restricted fraction ranges from 15% to 81% |
+
+C-33's three `end→end` points read all six groups and so are not restricted.
+
+C-72 and C-73 are the clearest case: all 25 cylinders must stay as obstructors,
+but only the centre cylinder and its two reference neighbours are ever read, so
+the assembled matrix drops from 1200 elements to 144 — roughly 70x fewer pairs,
+on cases that are obstructed and therefore expensive per pair. Both now run in
+under a second per kernel.
+
+**This is exact, and was verified rather than assumed.** Every one of the 115
+quadrature rows is *bitwise identical* to the same suite run without
+`radiating_groups`. The Monte Carlo rows are not bitwise identical (57 of 115
+are), which is expected and not a correctness signal: restricting the element
+set — and, separately, the new pair-level facing cull — changes how many `rand`
+draws the per-row RNG streams consume, so the sampling differs. The largest
+relative change across all MC rows is 6.9e-4, well inside the kernel's own
+noise, and both pass counts are unchanged.
+
+C-8 is deliberately *not* restricted: its extractors sum over groups 1 through
+1+nfront+nsecond, which is all but one of about 33 groups, and the tube counts
+are not known until the mesh is built.
+
+One safety note on using `radiating_groups` here. The extractors index
+`F_group` positionally, and `_aggregate` orders groups by sorted tag, so
+restricting to a non-prefix set such as `{1,4}` would move tag 4 into position 2
+and `fij(1,4)` would silently read the wrong factor. `run_case` therefore
+rejects any radiating set that is not the prefix `1:k`.
 
 ### Quadrature vs. Monte Carlo
 
@@ -100,6 +218,125 @@ Both kernels fail the same six points (the same underlying mesh/singularity
 limitations discussed below), which is why 109 vs 110 out of 115 differ by
 only one case (C-69's worst point crosses under 1% with MC by chance, not
 because MC is more accurate there).
+
+## Ray-shooting Monte Carlo
+
+A different Monte Carlo method from the pair-area `monte_carlo=true` above —
+see `src/RayTraceKernel.jl`'s module docstring for the method (cosine-
+weighted rays, nearest-hit against one whole-scene BVH). It supports only
+3D surface meshes, so it runs on 72 of this suite's 115 points (12 of the
+22 cases; the 2D curve-mesh cases — C-1 to C-4, C-8, C-63, C-68, C-69, C-72,
+C-73 — are skipped, not run with a fallback kernel). `n_rays=10000`
+throughout.
+
+**59/72 (82%) within 1%, median 0.18%.** Run with `benchmarks/howell/
+run_raytrace.jl`; results are appended to `results.csv` alongside the
+quad/mc rows (same column schema, `kernel=raytrace`), with their own
+provenance comment block.
+
+| Case  | Geometry                                      | Points | Median | Worst |
+|-------|------------------------------------------------|------:|--------:|--------:|
+| C-11  | Identical parallel opposed rectangles          |  4 | 0.049%  | 0.089%  |
+| C-14  | Perpendicular rectangles, common edge          |  4 | 0.187%  | 0.278%  |
+| C-40  | Coaxial parallel disks, equal radius           |  3 | 0.255%  | 0.260%  |
+| C-41  | Coaxial parallel disks, unequal radius         |  3 | 0.185%  | 0.217%  |
+| C-79  | Cylinder base to inside lateral surface        |  3 | 0.806%  | 0.849%  |
+| C-109 | Cone interior to base                          |  3 | 0.546%  | 0.684%  |
+| C-125 | Sphere to coaxial disk                         |  4 | 1.54%   | 1.85%   |
+| C-34  | Parallel regular polygons (n=3,4,5,6,8)        | 15 | 0.041%  | 0.470%  |
+| C-137 | Two spheres of unequal radius                  |  6 | 1.49%   | 2.55%   |
+| C-10  | Rectangle to semi-infinite rectangle, angle    |  6 | 0.014%  | 0.056%  |
+| C-33  | Hexagonal prism (6 face pairs × 3 L)           | 18 | 0.119%  | 1.23%   |
+| C-135 | Concentric spheres                             |  3 | 2.19%   | 2.84%   |
+
+### It's fast — dramatically so on this same 72-point subset
+
+| Kernel | Total seconds (72 points) | vs. ray-shooting |
+|---|---:|---:|
+| Ray-shooting | 193.4 | 1× |
+| Quadrature | 555.9 | 2.9× slower |
+| Pair-area Monte Carlo (`n_samples=5000`) | 5113.3 | 26.4× slower |
+
+This is the O(N·rays·log N) vs. O(N²) advantage described in `changelog.md`,
+now showing up across a real, varied benchmark suite rather than one
+synthetic scene — reproducing (roughly) the earlier synthetic-scene
+measurement (11.6×/45.2× at 836 elements) at a suite level.
+
+### The errors are systematic, not noise, and track mesh curvature
+
+Unlike the pair-area kernels (whose worst points, C-8 and C-10, come from
+known discretization/convergence limits already discussed above),
+ray-shooting's worst points here are concentrated on **curved bodies with
+coarse meshes**: C-135 (spheres, 2.84%), C-137 (spheres, 2.55%), C-125
+(sphere, 1.85%), C-79/C-109 (cylinder/cone, under 1%) — while the flat- or
+mildly-curved cases (C-10, C-11, C-14, C-34, C-40, C-41) converge to well
+under 1%, several to near machine precision. Two checks distinguish this
+from ordinary Monte Carlo noise:
+
+- **It does not shrink with `n_rays`.** C-135 at r2=0.75 stayed at 2.8%
+  error from `n_rays=5000` through `n_rays=80000` — a 16× sample increase
+  with no improvement, the signature of a systematic bias, not variance.
+- **It shrinks with mesh refinement instead.** Refining that same case's
+  mesh (`nsize` 0.2 → 0.1 → 0.05, element count 634 → 2530 → 9924) brought
+  the error from 2.8% to 1.0% to 0.4%.
+
+The mechanism: `RayTraceKernel.jl` triangulates each curved (Quad8/Tri6)
+element by its 4/3 *corner* nodes only (the same faceting the existing
+obstruction soups already use — see "Obstruction accuracy is limited by
+facet count" below), and classifies a hit as landing on a target's front or
+back face using *that flat triangle's* normal, not the true curved-surface
+normal at the hit point. On a coarsely faceted convex body, two adjacent
+facets can disagree slightly at their shared edge, and a ray leaving near
+grazing incidence can clip a neighbouring facet it geometrically shouldn't
+reach — this is the same category of faceting error the obstruction-soup
+caveat already documents, now showing up as a front/back misclassification
+rather than a missed/extra blocked ray. It is a mesh-resolution effect, not
+a randomness one, and — as the refinement check above shows — converges
+like one.
+
+### A mesh orientation bug this suite's normal convention hid from the other two kernels (fixed)
+
+`concentric_spheres` (C-135) cuts the inner (r1) sphere out of the outer
+(r2) one with an OCC boolean `cut`, then loads the result with a single
+mesh-wide `reverse_normals=true`. Gmsh/OCC gives *both* resulting surfaces
+an outward-facing normal by default — verified directly against a
+standalone sphere, which is outward-facing (`dot(normal, radial) = +1`)
+with `reverse_normals=false` — and the inner sphere from this cut comes out
+the same way, *not* flipped by the cut itself. A blanket
+`reverse_normals=true` therefore correctly fixes the outer sphere (which
+does need to point into the gap) while wrongly over-correcting the inner
+one, leaving it pointing into its own volume (`dot(normal, radial) = -1`)
+instead of away from it.
+
+This went unnoticed until now because the pair-area kernels tolerate it: a
+point-pair cosine test doesn't care which of a pair's two normals is inward
+as long as the sign works out over the full double integral, and
+empirically the *aggregated* F(inner→outer) and F(outer→inner) values stay
+correct under the old convention (quadrature: 0.999999 and 0.44435 against
+1.0 and 0.44444) — it is only `check_reciprocity`/row-sum closure that
+quietly fails (`Σⱼ Fᵢⱼ` off by up to 0.99, since the inner sphere's genuine
+zero self-view was being computed as if it weren't zero), and this suite
+had never checked closure for C-135, only the extracted F value.
+`raytrace=true` fails outright instead of subtly: a ray sampled from the
+cosine-weighted hemisphere around an inward-pointing normal is aimed *into*
+the body's own volume, and — starting exactly on that body's own surface —
+is geometrically guaranteed to exit back through the *same* body (a chord)
+rather than ever reaching the outer sphere. First measurement, before the
+fix: F(outer→inner) = 0.0068 against a catalog value of 0.444 (98.5% error;
+16 of 18 sampled rays in one trial hit another element of the *same* inner
+sphere instead of ever reaching the outer one).
+
+Fixed by adding `reverse_group_normals(mesh, groups)` to `src/MeshIO.jl` —
+flips only the requested physical groups instead of the whole mesh — and
+changing `cases.jl`'s C-135 entry to flip only the outer sphere's group
+(`reverse_groups=[2]`) instead of both. Quadrature and MC's C-135 rows are
+unaffected by the fix (verified: still 0.999999/0.44435, matching the old
+convention to 5 decimals) since they never depended on the inner sphere's
+sign being right; ray-shooting's C-135 error dropped from 98.5% to the
+2.2-2.8% (mesh-faceting-limited, see above) row in the table above. Every
+other `reverse_normals=true` case in this suite (C-33, C-79, C-109) is one
+topologically connected closed body, not two disconnected ones from a CSG
+cut, and was checked and found unaffected by this issue.
 
 ## What the benchmark found
 

@@ -30,8 +30,9 @@ before/after tables live in the `benchmarks/` directory (`benchmarks/RESULTS.md`
 
 ## Choosing `nquad`
 
-For well-separated elements, `nquad=4` (16 quadrature points per element pair)
-is a good default. Increase `nquad` when:
+For well-separated elements, `nquad=4` is a good default — `nquad²` = 16
+quadrature points on *each* element, hence `nquad⁴` = 256 point-pairs per
+element pair. Increase `nquad` when:
 
 - Elements are large relative to their separation distance
 - You need sub-percent accuracy on individual element-pair values
@@ -64,6 +65,25 @@ obstructions):
 | 10000  | ~1%  |
 | 100000 | ~0.3% |
 | 1000000 | ~0.1% |
+
+## Ray-shooting Monte Carlo (`raytrace=true`)
+
+For large or obstructed 3D meshes, `raytrace=true` is usually the fastest
+option: on a 72-point subset of the Howell catalog benchmark it was 2.9×
+faster than quadrature and 26.4× faster than pair-area Monte Carlo at
+`n_samples=5000` (see `benchmarks/howell/RESULTS.md`). It scales as
+O(N · n_rays · log N) rather than O(N²), and — unlike pair-area Monte Carlo —
+does not need a separate obstruction check per pair, since every radiating
+element is already part of the one scene BVH each ray is cast against.
+
+`n_rays` (default 10000) counts rays **per element**, not per element pair,
+so it is not directly comparable to `n_samples` — tune it per case. Increase
+it for smoother row sums on a closed enclosure (row sums converge to 1 as
+ordinary MC noise shrinks with `n_rays`) or for finer per-pair accuracy;
+decrease it for a quick estimate. On coarsely faceted curved bodies
+(spheres, cylinders), increasing `n_rays` alone will not remove the small
+systematic faceting bias described in [Integration Methods](@ref) — refine
+the mesh instead.
 
 ## Duffy vs high `nquad`
 
