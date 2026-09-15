@@ -513,7 +513,8 @@ end
 
 """
     patch_adjacent_pairs_duffy!(raw, coords, elems, nquad, mesh_dim,
-                                 bvh_for=(gi,gj)->nothing; factor=3.0)
+                                 bvh_for=(gi,gj)->nothing; factor=3.0,
+                                 pairs=nothing)
 
 Overwrite `raw[i,j]` and `raw[j,i]` (the raw, pre-area-division double
 integral, symmetric in `i,j`) for every pair within `factor` element-sizes
@@ -529,6 +530,14 @@ for a pair of element groups — obstruction geometry lives outside `elems`
 (e.g. a baffle group passed via `obstruction_groups`), so proximity between
 `i` and `j` alone does not imply an unobstructed path between them; the
 default no-op ignores obstruction entirely.
+
+`pairs`, if given, is used instead of recomputing `near_pairs` — the caller
+(the CPU assembly loop) already needs this list to skip these pairs in the
+O(N²) Monte Carlo bulk, so it is computed once and passed through rather than
+built twice. Each pair is independent (distinct `(i,j)` entries in `raw`), so
+the patch is applied with `Threads.@threads`; `bvh_for`'s own cache is
+lock-guarded (see `build_bvh_lookup` in `Assembly.jl`) so this is safe to call
+from multiple threads.
 """
 function patch_adjacent_pairs_duffy!(raw::Matrix{Float64},
                                       coords::Matrix{Float64},
@@ -536,9 +545,12 @@ function patch_adjacent_pairs_duffy!(raw::Matrix{Float64},
                                       nquad::Int,
                                       mesh_dim::Int,
                                       bvh_for::Function = (gi, gj) -> nothing;
-                                      factor::Float64 = 3.0)
+                                      factor::Float64 = 3.0,
+                                      pairs::Union{Nothing,Vector{Tuple{Int,Int}}} = nothing)
     mesh_dim == 1 && return raw
-    for (i, j) in near_pairs(coords, elems; factor=factor)
+    prs = pairs === nothing ? near_pairs(coords, elems; factor=factor) : pairs
+    Threads.@threads for k in eachindex(prs)
+        i, j = prs[k]
         bvh = bvh_for(elems[i].group, elems[j].group)
         raw_ij, _ = element_pair_view_factor_duffy(coords, elems[i], elems[j],
                                                      nquad, bvh, mesh_dim)

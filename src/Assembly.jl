@@ -13,7 +13,7 @@ import ..ViewFactorKernel: element_pair_view_factor, precompute_quad, ElementQua
 import ..MCKernel:         element_pair_view_factor_mc, sample_element_mc,
                            ElementSamples
 import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type,
-                           patch_adjacent_pairs_duffy!
+                           patch_adjacent_pairs_duffy!, near_pairs
 import ..ElementBounds:    ElementBound, build_element_bounds, pair_can_see
 import ..Results:          ViewFactorResult, _aggregate, aggregate_by_group,
                            check_reciprocity, check_closure
@@ -82,18 +82,28 @@ Assemble the full view factor matrix at element and physical-group level.
                           whichever backend the bulk ran on. `use_duffy` has
                           no separate effect here — the patch is
                           unconditional whenever `monte_carlo=true`.
-- `n_samples`           : MC sample pairs **per element pair**. Ignored when
-                          `monte_carlo=false`. Variance decreases as O(1/N)
-                          for the (non-adjacent) pairs Monte Carlo handles.
-                          This counts point-pairs directly, so it is `nquad⁴`
-                          — not `nquad²` — that it should be compared against:
-                          `n_samples=5000` does ~20x the kernel evaluations of
-                          the default `nquad=4`, and with `obstruction_groups`
-                          set, ~20x the BVH ray casts, since both paths ray-cast
-                          once per kernel-positive point-pair. On CPU that made
-                          a 4320-element obstructed case take 1368 s at
-                          `n_samples=5000` versus 60 s at `nquad=4`, for
-                          answers agreeing to 5 decimals.
+- `n_samples`           : MC sample pairs **per element pair** (default 5000).
+                          Ignored when `monte_carlo=false`. Variance decreases
+                          as O(1/N) for the (non-adjacent) pairs Monte Carlo
+                          handles. This counts point-pairs directly, so it is
+                          `nquad⁴` — not `nquad²` — that it should be compared
+                          against: `n_samples=5000` does ~20x the kernel
+                          evaluations of the default `nquad=4`, and with
+                          `obstruction_groups` set, ~20x the BVH ray casts,
+                          since both paths ray-cast once per kernel-positive
+                          point-pair. On CPU that made a 4320-element
+                          obstructed case take 1368 s at `n_samples=5000`
+                          versus 60 s at `nquad=4`, for answers agreeing to 5
+                          decimals. The default of 5000 is the value used
+                          throughout `benchmarks/howell/` (115 catalog points,
+                          96% within 1% of the published value, median error
+                          0.008%) — at that sample count the MC estimator's
+                          own noise is typically 10-1000x smaller than the
+                          mesh's discretization error against the analytic
+                          answer, so raising it further mostly buys accuracy
+                          the mesh cannot use. Lower it for a quick look at a
+                          large mesh; raise it only if `n_samples` sweeps on
+                          your own geometry show the noise still dominates.
 - `rng`                 : RNG for the CPU MC path. Pass a seeded RNG (e.g.
                           `MersenneTwister(42)`) for reproducible results.
                           Ignored on GPU.
@@ -153,7 +163,7 @@ function compute_view_factors(mesh               ::MeshData;
                                backend                          = CPU(),
                                self_vf           ::Bool         = false,
                                monte_carlo       ::Bool         = false,
-                               n_samples         ::Int          = 10000,
+                               n_samples         ::Int          = 5000,
                                rng               ::AbstractRNG  = Random.default_rng(),
                                use_duffy         ::Bool         = false,
                                factor            ::Float64      = 3.0,
@@ -255,7 +265,7 @@ function _compute_cpu(mesh              ::MeshData,
                        verbose          ::Bool,
                        mesh_dim         ::Int         = 2,
                        monte_carlo      ::Bool        = false,
-                       n_samples        ::Int         = 10000,
+                       n_samples        ::Int         = 5000,
                        rng              ::AbstractRNG = Random.default_rng(),
                        use_duffy        ::Bool        = false,
                        factor           ::Float64     = 3.0,
@@ -302,6 +312,16 @@ function _compute_cpu(mesh              ::MeshData,
             samples[i] = sample_element_mc(coords, elems[i], n_samples, row_rngs[i])
             A_elem[i]  = samples[i].A
         end
+        # Every pair this near will be overwritten by the Duffy patch below
+        # regardless of what the MC bulk loop computes for it, so skip it
+        # there entirely — O(N) pairs, saving `n_samples` kernel evaluations
+        # (and, with obstruction, that many BVH ray casts) each. Computed
+        # once and reused for both the skip and the patch itself. Curve
+        # meshes (mesh_dim == 1) get an empty list: the Duffy patch is a
+        # no-op there (see `patch_adjacent_pairs_duffy!`), so skipping would
+        # leave those entries at their initialised zero permanently.
+        near = mesh_dim == 1 ? Tuple{Int,Int}[] : near_pairs(coords, elems; factor=factor)
+        near_set = Set(near)
         Threads.@threads for i in 1:N
             gi      = elems[i].group
             si      = samples[i]
@@ -314,6 +334,7 @@ function _compute_cpu(mesh              ::MeshData,
                     ncull_i += 1
                     continue
                 end
+                j != i && (i, j) in near_set && continue
                 gj    = elems[j].group
                 bvh   = get_bvh(gi, gj)
                 # Diagonal self-pair needs an independent second sample set,
@@ -332,9 +353,10 @@ function _compute_cpu(mesh              ::MeshData,
         # The 1/r² kernel has unbounded variance for vertex/edge-adjacent
         # pairs — no amount of sampling fixes this. Patch those O(N) pairs
         # with the deterministic Duffy transform (see DuffyKernel.jl).
+        # `near` was already computed above, so it isn't rebuilt here.
         verbose && print("  Patching adjacent-pair singularities (Duffy)… ")
         patch_adjacent_pairs_duffy!(raw_integral, coords, elems, nquad, mesh_dim,
-                                     get_bvh; factor=factor)
+                                     get_bvh; factor=factor, pairs=near)
         verbose && println("done.")
     else
         # Pre-evaluate each element's quadrature points once (O(N)) instead of
