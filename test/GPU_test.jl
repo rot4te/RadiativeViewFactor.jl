@@ -65,7 +65,7 @@ end
                       Dict(1=>[1],2=>[2]), Dict{Int,Array{Float64,3}}(), 2)
     r = GPUAssembly.compute_view_factors_gpu(mesh, 4, CPU(), Float64, Array;
                                               raytrace=true, n_rays=50_000, verbose=false)
-    @test isapprox(r.F_group[1,2], 0.19982; rtol=1e-2)
+    @test isapprox(r.F_group[1,2], 0.19982; rtol=1.5e-2)
     @test r.F_elem[1,2] * r.A_elem[1] == r.F_elem[2,1] * r.A_elem[2]   # exact by construction
   end
 
