@@ -1,5 +1,14 @@
 # 2026-09-15
 
+- `.markdownlint.json` (new): disabled MD013 (line-length) for tables. The
+  Howell benchmark tables are data-dense (case name, geometry description,
+  several numeric columns) and cannot fit under 80 characters without cutting
+  content, so line-length is checked for prose/code/headings but not tables.
+- `benchmarks/howell/RESULTS.md`: reformatted all 6 tables to consistent,
+  fully-aligned column padding (was a mix of styles), split one over-length
+  shell command in the setup code block onto two lines, and shortened one
+  over-length heading — fixes the MD060/MD013 warnings the file was throwing
+  in the editor. No content changes.
 - `README.md`: added the `benchmarks/howell/` subdirectory (geometry
   builders, case list, reference tables, analytic formulas, both drivers,
   results) to the Project Layout diagram, which previously omitted it.

@@ -16,3 +16,6 @@ testmesh
 .DS_Store
 
 .vscode
+
+# keep my settings private
+*.json
