@@ -241,3 +241,89 @@ C-69,"Infinite parallel cylinders, unequal radius","r1=0.5, r2=1.5, s=0.5",quad,
 C-69,"Infinite parallel cylinders, unequal radius","r1=0.5, r2=1.5, s=0.5",mc,144,144,false,0.047,0.20747285,0.20746985,1.448e-05
 C-69,"Infinite parallel cylinders, unequal radius","r1=1.0, r2=0.25, s=2.0",quad,144,144,false,0.000,0.02491734,0.02491731,9.270e-07
 C-69,"Infinite parallel cylinders, unequal radius","r1=1.0, r2=0.25, s=2.0",mc,144,144,false,0.032,0.02491822,0.02491731,3.627e-05
+# --- raytrace kernel appended below ---
+# date: 2026-09-15 13:26:35
+# cpu: Apple M3
+# cpu_logical: 8
+# cpu_threads_julia_reports: 4
+# julia_threads: 4
+# memory_gb: 16.0
+# os: Darwin arm64-apple-darwin25.5.0
+# julia: 1.12.7
+# rvf_version: 0.6.3
+# rvf_commit: 272bed9-dirty
+# n_rays: 10000
+# kernel: raytrace
+# total_wall_seconds (raytrace only, 72 of 115 points; 2-D curve-mesh points skipped, see above): 198.2
+C-11,"Identical parallel directly opposed rectangles","a=1.0, b=1.0, c=1.0",raytrace,288,288,false,0.168,0.19980035,0.19982490,1.228e-04
+C-11,"Identical parallel directly opposed rectangles","a=2.0, b=1.0, c=1.0",raytrace,288,288,false,0.184,0.28575903,0.28587538,4.070e-04
+C-11,"Identical parallel directly opposed rectangles","a=1.0, b=1.0, c=0.5",raytrace,288,288,false,0.195,0.41549201,0.41525328,5.749e-04
+C-11,"Identical parallel directly opposed rectangles","a=2.0, b=4.0, c=1.0",raytrace,288,288,false,0.198,0.50944410,0.50898867,8.948e-04
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=1.0, h=1.0",raytrace,288,288,false,0.160,0.20032813,0.20004378,1.421e-03
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=2.0, h=1.0",raytrace,288,288,false,0.179,0.11669670,0.11642630,2.322e-03
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=1.0, h=0.5",raytrace,288,288,false,0.175,0.14620938,0.14618668,1.553e-04
+C-14,"Perpendicular rectangles with common edge","l=2.0, w=1.0, h=1.0",raytrace,288,288,false,0.251,0.24130417,0.24063601,2.777e-03
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=0.5",raytrace,486,486,false,0.627,0.38135965,0.38196601,1.587e-03
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=1.0",raytrace,486,486,false,0.415,0.17113522,0.17157288,2.551e-03
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=2.0",raytrace,486,486,false,0.285,0.05558342,0.05572809,2.596e-03
+C-41,"Coaxial parallel disks, unequal radius","r1=0.5, r2=0.75, a=1.5",raytrace,782,782,false,0.718,0.18610825,0.18651324,2.171e-03
+C-41,"Coaxial parallel disks, unequal radius","r1=0.5, r2=1.0, a=1.0",raytrace,1179,1179,false,1.604,0.46808990,0.46887113,1.666e-03
+C-41,"Coaxial parallel disks, unequal radius","r1=1.0, r2=0.5, a=1.0",raytrace,1179,1179,false,1.587,0.11700079,0.11721778,1.851e-03
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=0.5",raytrace,718,718,false,1.134,0.61364325,0.61803399,7.104e-03
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=1.0",raytrace,1169,1169,false,2.033,0.82175223,0.82842712,8.057e-03
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=2.0",raytrace,2095,2095,false,4.193,0.93625383,0.94427191,8.491e-03
+C-109,"Cone interior to base","r=0.5, h=0.5",raytrace,1459,1459,false,2.753,0.70405975,0.70710678,4.309e-03
+C-109,"Cone interior to base","r=0.5, h=1.0",raytrace,2127,2127,false,4.619,0.44477210,0.44721360,5.459e-03
+C-109,"Cone interior to base","r=0.5, h=2.0",raytrace,3038,3038,false,6.932,0.24087601,0.24253563,6.843e-03
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=0.75",raytrace,634,634,false,1.159,0.43182472,0.44444444,2.839e-02
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=1.0",raytrace,996,996,false,2.115,0.24453842,0.25000000,2.185e-02
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=2.0",raytrace,3252,3252,false,8.877,0.06147090,0.06250000,1.647e-02
+C-125,"Sphere to coaxial disk","rs=0.3, r=0.25, a=1",raytrace,344,344,false,0.241,0.01468145,0.01492875,1.657e-02
+C-125,"Sphere to coaxial disk","rs=0.3, r=0.5, a=1",raytrace,349,349,false,0.266,0.05181019,0.05278640,1.849e-02
+C-125,"Sphere to coaxial disk","rs=0.3, r=1.0, a=1",raytrace,733,733,false,0.530,0.14437019,0.14644661,1.418e-02
+C-125,"Sphere to coaxial disk","rs=0.3, r=2.0, a=1",raytrace,2263,2263,false,1.632,0.27244219,0.27639320,1.429e-02
+C-34,"Parallel regular polygons (n=3)","n=3, L=0.4",raytrace,155,155,false,0.102,0.02103831,0.02095300,4.072e-03
+C-34,"Parallel regular polygons (n=4)","n=4, L=0.4",raytrace,335,335,false,0.371,0.04624072,0.04613700,2.248e-03
+C-34,"Parallel regular polygons (n=5)","n=5, L=0.4",raytrace,591,591,false,0.622,0.07483226,0.07481200,2.709e-04
+C-34,"Parallel regular polygons (n=6)","n=6, L=0.4",raytrace,844,844,false,1.111,0.10560625,0.10566100,5.181e-04
+C-34,"Parallel regular polygons (n=8)","n=8, L=0.4",raytrace,1605,1605,false,1.881,0.16944604,0.16951600,4.127e-04
+C-34,"Parallel regular polygons (n=3)","n=3, L=1.0",raytrace,152,152,false,0.104,0.10569351,0.10560400,8.476e-04
+C-34,"Parallel regular polygons (n=4)","n=4, L=1.0",raytrace,337,337,false,0.309,0.19985163,0.19982500,1.333e-04
+C-34,"Parallel regular polygons (n=5)","n=5, L=1.0",raytrace,591,591,false,0.566,0.28078902,0.28046500,1.155e-03
+C-34,"Parallel regular polygons (n=6)","n=6, L=1.0",raytrace,848,848,false,1.023,0.34847941,0.34684900,4.701e-03
+C-34,"Parallel regular polygons (n=8)","n=8, L=1.0",raytrace,1595,1595,false,2.485,0.45520633,0.45502400,4.007e-04
+C-34,"Parallel regular polygons (n=3)","n=3, L=2.0",raytrace,152,152,false,0.162,0.26642343,0.26656000,5.123e-04
+C-34,"Parallel regular polygons (n=4)","n=4, L=2.0",raytrace,337,337,false,0.429,0.41516517,0.41525300,2.115e-04
+C-34,"Parallel regular polygons (n=5)","n=5, L=2.0",raytrace,591,591,false,0.918,0.51080399,0.51075100,1.038e-04
+C-34,"Parallel regular polygons (n=6)","n=6, L=2.0",raytrace,848,848,false,1.315,0.57836807,0.57837200,6.795e-06
+C-34,"Parallel regular polygons (n=8)","n=8, L=2.0",raytrace,1595,1595,false,3.313,0.66890469,0.66880200,1.535e-04
+C-137,"Two spheres of unequal radius","R=0.4, S=0.2",raytrace,2010,2010,false,2.413,0.11186256,0.11400000,1.875e-02
+C-137,"Two spheres of unequal radius","R=0.4, S=1.0",raytrace,2010,2010,false,1.757,0.04519474,0.04590000,1.537e-02
+C-137,"Two spheres of unequal radius","R=1.0, S=0.2",raytrace,570,570,false,0.386,0.05798279,0.05950000,2.550e-02
+C-137,"Two spheres of unequal radius","R=1.0, S=1.0",raytrace,570,570,false,0.364,0.02897909,0.02940000,1.432e-02
+C-137,"Two spheres of unequal radius","R=3.0, S=0.2",raytrace,2786,2786,false,2.251,0.01714790,0.01740000,1.449e-02
+C-137,"Two spheres of unequal radius","R=3.0, S=1.0",raytrace,2786,2786,false,2.208,0.01119327,0.01130000,9.445e-03
+C-10,"Rectangle to semi-infinite rectangle at angle","A=0.4, φ=45.0°",raytrace,9216,9216,false,17.086,0.70629186,0.70629500,4.439e-06
+C-10,"Rectangle to semi-infinite rectangle at angle","A=0.4, φ=120.0°",raytrace,9216,9216,false,18.837,0.15818123,0.15827000,5.609e-04
+C-10,"Rectangle to semi-infinite rectangle at angle","A=1.0, φ=45.0°",raytrace,7936,7936,false,23.036,0.57405157,0.57395100,1.752e-04
+C-10,"Rectangle to semi-infinite rectangle at angle","A=1.0, φ=120.0°",raytrace,7936,7936,false,16.055,0.11003640,0.11004600,8.724e-05
+C-10,"Rectangle to semi-infinite rectangle at angle","A=2.0, φ=45.0°",raytrace,6912,6912,false,14.603,0.44104743,0.44100400,9.849e-05
+C-10,"Rectangle to semi-infinite rectangle at angle","A=2.0, φ=120.0°",raytrace,6912,6912,false,12.705,0.07564532,0.07561200,4.406e-04
+C-33,"Hexagonal prism, wall→adjacent wall","L=0.5",raytrace,973,302,true,0.282,0.10657197,0.10656000,1.124e-04
+C-33,"Hexagonal prism, wall→next wall","L=0.5",raytrace,973,451,true,0.534,0.13697828,0.13715200,1.267e-03
+C-33,"Hexagonal prism, wall→opposite wall","L=0.5",raytrace,973,600,true,0.881,0.14386262,0.14420100,2.347e-03
+C-33,"Hexagonal prism, end→wall","L=0.5",raytrace,973,787,true,1.431,0.14174871,0.14178700,2.700e-04
+C-33,"Hexagonal prism, wall→end","L=0.5",raytrace,973,787,true,1.629,0.18486435,0.18418700,3.678e-03
+C-33,"Hexagonal prism, end→end","L=0.5",raytrace,973,973,false,2.236,0.14911065,0.14927700,1.114e-03
+C-33,"Hexagonal prism, wall→adjacent wall","L=1.0",raytrace,689,157,true,0.161,0.08663758,0.08661500,2.607e-04
+C-33,"Hexagonal prism, wall→next wall","L=1.0",raytrace,689,236,true,0.254,0.08783150,0.08676300,1.232e-02
+C-33,"Hexagonal prism, wall→opposite wall","L=1.0",raytrace,689,314,true,0.368,0.08761252,0.08759800,1.658e-04
+C-33,"Hexagonal prism, end→wall","L=1.0",raytrace,689,503,true,0.908,0.10856239,0.10835800,1.886e-03
+C-33,"Hexagonal prism, wall→end","L=1.0",raytrace,689,503,true,0.858,0.28207691,0.28282300,2.638e-03
+C-33,"Hexagonal prism, end→end","L=1.0",raytrace,689,689,false,1.454,0.34910557,0.34685000,6.503e-03
+C-33,"Hexagonal prism, wall→adjacent wall","L=2.0",raytrace,2135,317,true,0.495,0.06343489,0.06324800,2.955e-03
+C-33,"Hexagonal prism, wall→next wall","L=2.0",raytrace,2135,475,true,0.548,0.04814950,0.04816600,3.426e-04
+C-33,"Hexagonal prism, wall→opposite wall","L=2.0",raytrace,2135,635,true,1.072,0.04673016,0.04689200,3.451e-03
+C-33,"Hexagonal prism, end→wall","L=2.0",raytrace,2135,1386,true,2.430,0.07021412,0.07027100,8.094e-04
+C-33,"Hexagonal prism, wall→end","L=2.0",raytrace,2135,1386,true,2.698,0.36530907,0.36514000,4.630e-04
+C-33,"Hexagonal prism, end→end","L=2.0",raytrace,2135,2135,false,5.513,0.57816300,0.57837200,3.614e-04

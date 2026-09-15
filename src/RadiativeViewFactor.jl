@@ -28,7 +28,7 @@ include("GPUAssembly.jl")   # imports Results + Assembly.register_gpu_hook!;
 
 using .MeshIO:    load_mesh, load_re2, MeshData
 using .MeshIO:    SurfaceElement
-using .MeshIO:    split_groups_by_tag, restrict_to_radiating
+using .MeshIO:    split_groups_by_tag, restrict_to_radiating, reverse_group_normals
 using .Geometry:  quad8_physical_point, quad8_normal_and_area_element,
                   quad4_shape, quad4_physical_point, quad4_normal_and_area_element,
                   line2_shape, line2_physical_point, line2_normal_and_length_element,
@@ -52,6 +52,7 @@ export load_mesh,
        SurfaceElement,
        split_groups_by_tag,
        restrict_to_radiating,
+       reverse_group_normals,
        ViewFactorResult,
        quad8_physical_point,
        quad8_normal_and_area_element,

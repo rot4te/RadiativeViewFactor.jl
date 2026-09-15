@@ -184,3 +184,32 @@ end
     @test isapprox(mid, (c1 + c2) / 2; atol=1e-14)
   end
 end
+
+@testset "reverse_group_normals flips only the requested groups" begin
+  # Two coplanar Quad4 elements, different groups, identical winding.
+  coords = [0.0 1 1 0  2 3 3 2;
+            0.0 0 1 1  0 0 1 1;
+            0.0 0 0 0  0 0 0 0]
+  elems  = [SurfaceElement([1,2,3,4], 1, :quad4), SurfaceElement([5,6,7,8], 2, :quad4)]
+  mesh   = MeshData(coords, elems, Dict(1=>"a",2=>"b"), Dict(1=>[1],2=>[2]),
+                    Dict{Int,Array{Float64,3}}(), 2)
+
+  normal(el) = RadiativeViewFactor.Geometry.quad4_normal_and_area_element(
+      coords, el.nodes, 0.0, 0.0)[1]
+  n1_before, n2_before = normal(elems[1]), normal(elems[2])
+  @test n1_before == n2_before   # same winding -> same normal, before any flip
+
+  flipped = reverse_group_normals(mesh, 2)   # single Integer tag, not a collection
+  @test normal(flipped.surface_elems[1]) == n1_before          # group 1 untouched
+  @test isapprox(normal(flipped.surface_elems[2]), -n2_before) # group 2 flipped
+  @test flipped.coords === mesh.coords                          # geometry unchanged, only winding
+  @test elems[1].nodes == [1,2,3,4]                             # original mesh untouched (returns a new MeshData)
+
+  # A collection of tags also works, and flipping twice is an involution.
+  flipped_both = reverse_group_normals(mesh, [1, 2])
+  @test isapprox(normal(flipped_both.surface_elems[1]), -n1_before)
+  @test isapprox(normal(flipped_both.surface_elems[2]), -n2_before)
+  back = reverse_group_normals(flipped_both, [1, 2])
+  @test normal(back.surface_elems[1]) == n1_before
+  @test normal(back.surface_elems[2]) == n2_before
+end

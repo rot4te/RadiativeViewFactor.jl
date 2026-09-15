@@ -1400,3 +1400,134 @@ large-N/large-`n_rays` combination that would need many chunks on real
 hardware wasn't run here). Same CPU-side scope gaps as before still apply
 on GPU: no 2-D curve-mesh support, no `self_vf` support, not run against
 the `benchmarks/howell/` catalog suite.
+
+## Ray-shooting kernel run against the full Howell catalog suite — a real bug found and fixed along the way
+
+Context: `raytrace=true` had only been checked against a handful of focused
+`test/raytrace_test.jl` cases, not the 115-point Howell catalog suite the
+other two kernels are validated against. Ran it on the 72 of those 115
+points that are 3-D surface meshes (raytrace does not support the 43
+2-D-curve-mesh points yet), sharing `benchmarks/howell/`'s existing case
+list, and found — then fixed — a real, previously-invisible mesh-orientation
+bug along the way.
+
+### Shared the case list between `run.jl` and a new `run_raytrace.jl`
+
+`benchmarks/howell/`'s 22-case, ~115-parameter-point case list (previously
+inline in `run.jl`) is now `benchmarks/howell/cases.jl`, `include`d by both
+drivers — avoided duplicating (and risking drift in) ~180 lines of delicate
+geometry/parameter/solver-option combinations. Verified the extraction was
+behavior-preserving before running anything expensive: case count (115),
+per-case counts, and a spot-check of `run.jl`'s own quad/mc output on the
+refactored file all matched the pre-refactor values.
+
+`run_raytrace.jl` (new) mirrors `run.jl`'s structure (`Case`, `run_case`-style
+driver, same CSV/provenance conventions) but runs only `raytrace=true`
+(`n_rays=10000`) and appends its rows to the *existing* `results.csv`
+(distinct `kernel=raytrace` value, its own provenance comment block) rather
+than overwriting it.
+
+### A real bug: `concentric_spheres`' blanket `reverse_normals` silently mis-orients the inner sphere
+
+First full run found a catastrophic outlier: C-135 (concentric spheres)
+gave F(outer→inner) = 0.0068 against a catalog value of 0.444 — 98.5% error,
+not a fluke (reproduced across all 3 of its parameter points). Traced this
+to the mesh, not the kernel: `concentric_spheres` builds the inner (r1)
+sphere via an OCC boolean `cut`, then loads the result with a single
+mesh-wide `reverse_normals=true`. Measured directly: a standalone sphere is
+outward-facing by default (`dot(normal, radial) = +1` with
+`reverse_normals=false`), and the inner sphere of this CSG cut comes out of
+Gmsh the same way, *not* flipped by the cut itself — so the blanket
+`reverse_normals=true` correctly fixes the outer sphere (which does need to
+point into the gap) while wrongly over-correcting the inner one, leaving it
+pointing into its own volume instead of away from it.
+
+This is why it went unnoticed until now: **the pair-area kernels tolerate
+it.** Their point-pair cosine test doesn't care which of a pair's two
+normals is inward as long as the sign works out over the full double
+integral, and empirically the *aggregated* F(inner→outer)/F(outer→inner)
+values stay correct under the old (wrong) convention — quadrature gives
+0.999999 and 0.44435 against analytic 1.0 and 0.44444, matching to 4-5
+decimals. Only row-sum closure quietly fails (`Σⱼ Fᵢⱼ` off by up to 0.99),
+and this suite had never checked closure for C-135, only the extracted F
+value, so nothing flagged it. `raytrace=true` fails outright instead of
+subtly, and this is *why* it's a genuinely useful validation exercise, not
+just a stress test: a ray sampled from the cosine-weighted hemisphere
+around an inward-pointing normal is aimed *into* the body's own volume,
+and — starting exactly on that body's own surface — is geometrically
+guaranteed to exit back through the *same* body (a chord) rather than ever
+reaching the outer sphere. Confirmed directly before the fix: 16 of 18
+sampled rays from one inner-sphere element, in one trial, hit *another*
+inner-sphere element instead of ever reaching the outer sphere.
+
+**Fixed** by adding `reverse_group_normals(mesh, groups)` to `src/MeshIO.jl`
+— reverses only the requested physical group(s), reusing the same
+per-family node-swap the existing mesh-wide `reverse_normals` flag already
+uses, instead of flipping the whole mesh — and changing `cases.jl`'s C-135
+entry to flip only the outer sphere's group (`reverse_groups=[2]`, a new
+option `run_case`/`run_case_raytrace` both gained) instead of both. Verified
+no regression: quadrature and MC's C-135 rows are unchanged to 5 decimals
+under the corrected convention (they never depended on the inner sphere's
+sign being right); `raytrace`'s C-135 error dropped from 98.5% to 2.2-2.8%
+(now understood to be a separate, much smaller, mesh-faceting effect — see
+below). Every other `reverse_normals=true` case in this suite (C-33, C-79,
+C-109) is one topologically connected closed body, not two disconnected
+ones from a CSG cut, and was checked and found unaffected.
+
+**Files**: `src/MeshIO.jl` (`reverse_group_normals`, new, exported),
+`src/RadiativeViewFactor.jl` (export), `benchmarks/howell/cases.jl` (C-135
+entry), `benchmarks/howell/run.jl`/`run_raytrace.jl` (`reverse_groups`
+option on `run_case`/`run_case_raytrace`), `test/mesh_test.jl` (new
+testset, 9 checks: flips only the targeted group, accepts a single tag or a
+collection, leaves the original `MeshData` untouched, is its own inverse).
+
+### A second, smaller finding: ray-shooting has a real (small, quantified, mesh-resolution-limited) bias on coarsely faceted curved bodies
+
+With the orientation bug fixed, 59/72 (82%) of raytrace's points are within
+1% of the catalog (median 0.18%), but the worst points are concentrated on
+curved bodies at this suite's default mesh coarseness: C-135 (spheres,
+2.84%), C-137 (spheres, 2.55%), C-125 (sphere, 1.85%) — while flat/mildly-
+curved cases (C-10, C-11, C-14, C-34, C-40, C-41) converge to well under 1%,
+several to near machine precision. Two checks confirm this is a systematic,
+mesh-resolution-limited bias, not ordinary MC noise: it does *not* shrink
+with `n_rays` (C-135 stayed at ~2.8% error from `n_rays=5000` through
+`n_rays=80000`, a 16× sample increase with no improvement), and it *does*
+shrink with mesh refinement (halving element size twice, 634 → 2530 → 9924
+elements, brought the same case from 2.8% to 1.0% to 0.4%).
+
+Mechanism: `RayTraceKernel.jl` triangulates each curved (Quad8/Tri6)
+element by its corner nodes only — the same faceting the existing
+obstruction soups already use (see this file's own obstruction-accuracy
+notes above) — and classifies a ray's hit as front- or back-facing using
+*that flat triangle's* normal, not the true curved-surface normal at the
+hit point. On a coarsely faceted convex body, adjacent facets can disagree
+slightly at their shared edge, letting a near-grazing ray clip a
+neighbouring facet it geometrically shouldn't reach. This is the same
+category of faceting error the package's existing obstruction-soup caveat
+already documents for occlusion; here it shows up as a front/back
+misclassification instead of a missed/extra blocked ray. Not fixed in this
+pass — noted as a known, quantified, mesh-resolution-dependent limitation
+of the corner-triangulated scene approximation, worth keeping in mind for
+anyone using `raytrace=true` on coarsely meshed curved 3-D geometry.
+
+### Speed, on this same 72-point subset
+
+| Kernel | Total seconds | vs. ray-shooting |
+|---|---:|---:|
+| Ray-shooting | 193.4 | 1× |
+| Quadrature | 555.9 | 2.9× slower |
+| Pair-area Monte Carlo (`n_samples=5000`) | 5113.3 | 26.4× slower |
+
+Roughly reproduces the earlier synthetic-scene speed measurement
+(11.6×/45.2× at 836 elements) at a full, varied-geometry suite level —
+smaller ratios here since this mix includes many small/cheap cases where
+fixed per-launch overhead matters more, and large cases (C-10, ~9200
+elements) where quadrature itself is already fast.
+
+**Files (results)**: `benchmarks/howell/results.csv` (72 new `kernel=raytrace`
+rows appended, existing quad/mc rows untouched), `benchmarks/howell/RESULTS.md`
+(new "Ray-shooting Monte Carlo" section: results table, speed table, the
+orientation-bug writeup, the faceting-bias writeup).
+
+**Verified**: full test suite (`Pkg.test()`, 8 threads) passes, including the
+new `reverse_group_normals` tests. Branch: `mc_speedup`.

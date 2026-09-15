@@ -679,6 +679,60 @@ function _reverse_all_normals!(surface_elems::Vector{SurfaceElement},
     end
 end
 
+"""
+    reverse_group_normals(mesh::MeshData, groups) -> MeshData
+
+Return a new `MeshData` with normals reversed for elements belonging to
+`groups` (a single tag or a collection of tags), leaving every other
+element's node order — and therefore normal — unchanged. Uses the same
+per-family swap as `load_mesh`'s/`load_re2`'s mesh-wide `reverse_normals`
+flag (see its docstring above for the corner/mid-side permutation table),
+just applied selectively.
+
+This is the tool for meshes whose normal orientation needs differ *between*
+physical groups rather than being uniform across the whole mesh — most
+commonly, a CSG-cut body containing another (a smaller sphere or cylinder
+sitting inside a larger one, cut apart with a boolean `cut`/`subtract`):
+Gmsh/OCC's default orientation is typically already correct (outward from
+each body) for a body defined as its *own* solid, independent of any later
+cut, but a single global `reverse_normals=true` flips *both* surfaces —
+correcting the outer one (which does need flipping, from outward-from-the-
+whole-assembly to pointing into the gap) while wrongly over-correcting the
+inner one (which was already right), leaving it pointing into its own
+volume instead of away from it. Two symptoms distinguish this from a
+genuine modelling error: (1) the pair-area kernels (quadrature,
+`monte_carlo`) still recover roughly the correct *aggregated* view factor
+despite it — their point-pair cosine test doesn't care which of a pair's
+two normals is inward as long as the sign works out over the full double
+integral — while `check_reciprocity`/row-sum closure quietly does not
+(`Σⱼ Fᵢⱼ` stays far from 1, since the inner body's genuine zero self-view
+is being computed as if it weren't zero); and (2) `raytrace=true` fails
+outright rather than subtly, because a ray sampled from a cosine-weighted
+hemisphere around an inward-pointing normal is aimed into the body's own
+volume, and — starting exactly on that body's own surface — is
+geometrically guaranteed to exit back through the *same* body (a chord)
+rather than ever reaching anything else.
+
+# Example
+```julia
+mesh = load_mesh("concentric.msh"; surface_dim=2)   # reverse_normals=false: leave the default
+mesh = reverse_group_normals(mesh, 2)               # flip only the outer body's group
+```
+"""
+function reverse_group_normals(mesh::MeshData, groups)::MeshData
+    keep = groups isa Integer ? Set((groups,)) : Set(groups)
+    new_elems = copy(mesh.surface_elems)
+    idx = findall(el -> el.group in keep, new_elems)
+    # _reverse_all_normals! dispatches on Vector{SurfaceElement} specifically,
+    # so the matching subset is copied out, reversed, and written back —
+    # a @view (SubArray) wouldn't dispatch to it.
+    subset = new_elems[idx]
+    _reverse_all_normals!(subset, mesh.mesh_dim)
+    new_elems[idx] = subset
+    return MeshData(mesh.coords, new_elems, mesh.group_tags, mesh.group_elems,
+                    mesh.group_tri_soup, mesh.mesh_dim)
+end; export reverse_group_normals
+
 # ---------------------------------------------------------------------------
 # Obstruction geometry soups
 # ---------------------------------------------------------------------------

@@ -36,11 +36,15 @@ still obstructs — see "Restricted assembly" below.
 ```bash
 julia --project=benchmarks -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmarks --threads=auto benchmarks/howell/run.jl
+julia --project=benchmarks --threads=auto benchmarks/howell/run_raytrace.jl   # third kernel, appends to the same results.csv
 ```
 
 Results are written to `results.csv` (as a fraction, not percent), one row
 per case per kernel, with per-call runtimes and a commented system-information
-preamble.
+preamble. A third kernel, ray-shooting Monte Carlo (`raytrace=true`), is
+covered separately in [Ray-shooting Monte Carlo](#ray-shooting-monte-carlo)
+below — `run_raytrace.jl` shares the same case list (`cases.jl`) as
+`run.jl` but runs only that kernel, and only on the 3D cases it supports.
 
 ## Results
 
@@ -83,6 +87,11 @@ C-8, C-63, C-68, C-69, C-72, C-73) and 3D surface meshes (the rest) — over
 planes, disks, cylinders, cones, spheres and polygon arrays, including opposed,
 perpendicular, enclosing, edge-sharing, mutually shadowing and multi-body
 obstruction configurations.
+
+A third kernel, ray-shooting Monte Carlo (`raytrace=true`), is covered
+separately below in [Ray-shooting Monte Carlo](#ray-shooting-monte-carlo) —
+it only supports 3D surface meshes, so it runs on 72 of the 115 points here,
+not all 115.
 
 ## System
 
@@ -209,6 +218,125 @@ Both kernels fail the same six points (the same underlying mesh/singularity
 limitations discussed below), which is why 109 vs 110 out of 115 differ by
 only one case (C-69's worst point crosses under 1% with MC by chance, not
 because MC is more accurate there).
+
+## Ray-shooting Monte Carlo
+
+A different Monte Carlo method from the pair-area `monte_carlo=true` above —
+see `src/RayTraceKernel.jl`'s module docstring for the method (cosine-
+weighted rays, nearest-hit against one whole-scene BVH). It supports only
+3D surface meshes, so it runs on 72 of this suite's 115 points (12 of the
+22 cases; the 2D curve-mesh cases — C-1 to C-4, C-8, C-63, C-68, C-69, C-72,
+C-73 — are skipped, not run with a fallback kernel). `n_rays=10000`
+throughout.
+
+**59/72 (82%) within 1%, median 0.18%.** Run with `benchmarks/howell/
+run_raytrace.jl`; results are appended to `results.csv` alongside the
+quad/mc rows (same column schema, `kernel=raytrace`), with their own
+provenance comment block.
+
+| Case  | Geometry                                      | Points | Median | Worst |
+|-------|------------------------------------------------|------:|--------:|--------:|
+| C-11  | Identical parallel opposed rectangles          |  4 | 0.049%  | 0.089%  |
+| C-14  | Perpendicular rectangles, common edge          |  4 | 0.187%  | 0.278%  |
+| C-40  | Coaxial parallel disks, equal radius           |  3 | 0.255%  | 0.260%  |
+| C-41  | Coaxial parallel disks, unequal radius         |  3 | 0.185%  | 0.217%  |
+| C-79  | Cylinder base to inside lateral surface        |  3 | 0.806%  | 0.849%  |
+| C-109 | Cone interior to base                          |  3 | 0.546%  | 0.684%  |
+| C-125 | Sphere to coaxial disk                         |  4 | 1.54%   | 1.85%   |
+| C-34  | Parallel regular polygons (n=3,4,5,6,8)        | 15 | 0.041%  | 0.470%  |
+| C-137 | Two spheres of unequal radius                  |  6 | 1.49%   | 2.55%   |
+| C-10  | Rectangle to semi-infinite rectangle, angle    |  6 | 0.014%  | 0.056%  |
+| C-33  | Hexagonal prism (6 face pairs × 3 L)           | 18 | 0.119%  | 1.23%   |
+| C-135 | Concentric spheres                             |  3 | 2.19%   | 2.84%   |
+
+### It's fast — dramatically so on this same 72-point subset
+
+| Kernel | Total seconds (72 points) | vs. ray-shooting |
+|---|---:|---:|
+| Ray-shooting | 193.4 | 1× |
+| Quadrature | 555.9 | 2.9× slower |
+| Pair-area Monte Carlo (`n_samples=5000`) | 5113.3 | 26.4× slower |
+
+This is the O(N·rays·log N) vs. O(N²) advantage described in `changelog.md`,
+now showing up across a real, varied benchmark suite rather than one
+synthetic scene — reproducing (roughly) the earlier synthetic-scene
+measurement (11.6×/45.2× at 836 elements) at a suite level.
+
+### The errors are systematic, not noise, and track mesh curvature
+
+Unlike the pair-area kernels (whose worst points, C-8 and C-10, come from
+known discretization/convergence limits already discussed above),
+ray-shooting's worst points here are concentrated on **curved bodies with
+coarse meshes**: C-135 (spheres, 2.84%), C-137 (spheres, 2.55%), C-125
+(sphere, 1.85%), C-79/C-109 (cylinder/cone, under 1%) — while the flat- or
+mildly-curved cases (C-10, C-11, C-14, C-34, C-40, C-41) converge to well
+under 1%, several to near machine precision. Two checks distinguish this
+from ordinary Monte Carlo noise:
+
+- **It does not shrink with `n_rays`.** C-135 at r2=0.75 stayed at 2.8%
+  error from `n_rays=5000` through `n_rays=80000` — a 16× sample increase
+  with no improvement, the signature of a systematic bias, not variance.
+- **It shrinks with mesh refinement instead.** Refining that same case's
+  mesh (`nsize` 0.2 → 0.1 → 0.05, element count 634 → 2530 → 9924) brought
+  the error from 2.8% to 1.0% to 0.4%.
+
+The mechanism: `RayTraceKernel.jl` triangulates each curved (Quad8/Tri6)
+element by its 4/3 *corner* nodes only (the same faceting the existing
+obstruction soups already use — see "Obstruction accuracy is limited by
+facet count" below), and classifies a hit as landing on a target's front or
+back face using *that flat triangle's* normal, not the true curved-surface
+normal at the hit point. On a coarsely faceted convex body, two adjacent
+facets can disagree slightly at their shared edge, and a ray leaving near
+grazing incidence can clip a neighbouring facet it geometrically shouldn't
+reach — this is the same category of faceting error the obstruction-soup
+caveat already documents, now showing up as a front/back misclassification
+rather than a missed/extra blocked ray. It is a mesh-resolution effect, not
+a randomness one, and — as the refinement check above shows — converges
+like one.
+
+### A mesh orientation bug this suite's normal convention hid from the other two kernels (fixed)
+
+`concentric_spheres` (C-135) cuts the inner (r1) sphere out of the outer
+(r2) one with an OCC boolean `cut`, then loads the result with a single
+mesh-wide `reverse_normals=true`. Gmsh/OCC gives *both* resulting surfaces
+an outward-facing normal by default — verified directly against a
+standalone sphere, which is outward-facing (`dot(normal, radial) = +1`)
+with `reverse_normals=false` — and the inner sphere from this cut comes out
+the same way, *not* flipped by the cut itself. A blanket
+`reverse_normals=true` therefore correctly fixes the outer sphere (which
+does need to point into the gap) while wrongly over-correcting the inner
+one, leaving it pointing into its own volume (`dot(normal, radial) = -1`)
+instead of away from it.
+
+This went unnoticed until now because the pair-area kernels tolerate it: a
+point-pair cosine test doesn't care which of a pair's two normals is inward
+as long as the sign works out over the full double integral, and
+empirically the *aggregated* F(inner→outer) and F(outer→inner) values stay
+correct under the old convention (quadrature: 0.999999 and 0.44435 against
+1.0 and 0.44444) — it is only `check_reciprocity`/row-sum closure that
+quietly fails (`Σⱼ Fᵢⱼ` off by up to 0.99, since the inner sphere's genuine
+zero self-view was being computed as if it weren't zero), and this suite
+had never checked closure for C-135, only the extracted F value.
+`raytrace=true` fails outright instead of subtly: a ray sampled from the
+cosine-weighted hemisphere around an inward-pointing normal is aimed *into*
+the body's own volume, and — starting exactly on that body's own surface —
+is geometrically guaranteed to exit back through the *same* body (a chord)
+rather than ever reaching the outer sphere. First measurement, before the
+fix: F(outer→inner) = 0.0068 against a catalog value of 0.444 (98.5% error;
+16 of 18 sampled rays in one trial hit another element of the *same* inner
+sphere instead of ever reaching the outer one).
+
+Fixed by adding `reverse_group_normals(mesh, groups)` to `src/MeshIO.jl` —
+flips only the requested physical groups instead of the whole mesh — and
+changing `cases.jl`'s C-135 entry to flip only the outer sphere's group
+(`reverse_groups=[2]`) instead of both. Quadrature and MC's C-135 rows are
+unaffected by the fix (verified: still 0.999999/0.44435, matching the old
+convention to 5 decimals) since they never depended on the inner sphere's
+sign being right; ray-shooting's C-135 error dropped from 98.5% to the
+2.2-2.8% (mesh-faceting-limited, see above) row in the table above. Every
+other `reverse_normals=true` case in this suite (C-33, C-79, C-109) is one
+topologically connected closed body, not two disconnected ones from a CSG
+cut, and was checked and found unaffected by this issue.
 
 ## What the benchmark found
 
