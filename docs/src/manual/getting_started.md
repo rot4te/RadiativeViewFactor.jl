@@ -17,7 +17,7 @@ using RadiativeViewFactor
 # 3D surface mesh (default)
 mesh = load_mesh("geometry.msh")
 
-# 2D planar curve mesh (view factors per unit depth)
+# 2D planar curve mesh
 mesh = load_mesh("planar.msh"; surface_dim=1)
 
 # Other formats are detected from the extension

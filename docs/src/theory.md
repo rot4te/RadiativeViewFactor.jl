@@ -12,7 +12,7 @@ F_{ij} = \frac{1}{A_i} \iint_{A_i} \iint_{A_j}
     \frac{\cos\theta_i \cos\theta_j}{\pi r^2} \, H_{ij} \, dA_j \, dA_i
 ```
 
-**2D (curve meshes, per unit depth):**
+**2D (curve meshes):**
 
 ```math
 F_{ij} = \frac{1}{L_i} \int_{L_i} \int_{L_j}

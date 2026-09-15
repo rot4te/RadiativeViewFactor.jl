@@ -5,7 +5,7 @@
 # 3D (surface meshes, mesh_dim=2):
 #   Fᵢⱼ = (1/Aᵢ) ∬_Aᵢ ∬_Aⱼ  [cos θᵢ cos θⱼ / (π r²)]  H_ij  dAⱼ dAᵢ
 #
-# 2D (curve meshes, mesh_dim=1, per unit depth):
+# 2D (curve meshes, mesh_dim=1):
 #   Fᵢⱼ = (1/Lᵢ) ∫_Lᵢ  ∫_Lⱼ  [cos θᵢ cos θⱼ / (2 r)]   H_ij  dLⱼ dLᵢ
 #
 # The dimension is inferred from the element family of elem_i:
@@ -133,7 +133,7 @@ end
     return cos_i * cos_j / (π * r²)
 end
 
-"""2D kernel (per unit depth): cos θᵢ cos θⱼ / (2 r)"""
+"""2D kernel: cos θᵢ cos θⱼ / (2 r)"""
 @inline function vf_kernel_2d(xi::SVector{3,Float64}, ni::SVector{3,Float64},
                                xj::SVector{3,Float64}, nj::SVector{3,Float64})::Float64
     r_vec = xj - xi

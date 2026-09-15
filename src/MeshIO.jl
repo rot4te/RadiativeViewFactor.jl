@@ -13,7 +13,7 @@ import Gmsh: gmsh
 # ---------------------------------------------------------------------------
 # Both 1st-order (linear) and 2nd-order (quadratic) elements are supported.
 #
-# Dimension 1 (curves, planar 2D view factors per unit depth):
+# Dimension 1 (curves, planar 2D view factors):
 #   Type  1 — Line2  (2-node 1st-order line)
 #   Type  8 — Line3  (3-node 2nd-order line)
 # Dimension 2 (surfaces, 3D view factors):
@@ -108,7 +108,7 @@ Supported element families (any mix in one mesh):
 - Curves   (`surface_dim=1`): Line2 (1st order); Line3 (2nd order).
 
 `surface_dim=2` (default) — surface mesh, 3D view factors.
-`surface_dim=1`            — planar curve mesh, 2D view factors per unit depth.
+`surface_dim=1`            — planar curve mesh, 2D view factors.
 
 Named physical groups are used to partition the radiating surfaces. Formats
 that cannot carry physical groups (e.g. STL) have no named groups; in that case
