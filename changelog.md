@@ -1,3 +1,14 @@
+# 2026-09-15
+
+- `README.md`: added the `benchmarks/howell/` subdirectory (geometry
+  builders, case list, reference tables, analytic formulas, both drivers,
+  results) to the Project Layout diagram, which previously omitted it.
+- `README.md`, `docs/src/theory.md`, `docs/src/manual/getting_started.md`,
+  `src/MeshIO.jl`, `src/ViewFactorKernel.jl`, `benchmarks/howell/geom.jl`,
+  `benchmarks/howell/run.jl`: removed all "per unit depth" language
+  describing 2D (curve-mesh) view factors — flagged as an inaccurate
+  description; the surrounding text/formulas are otherwise unchanged.
+
 # v0.6.2 changelog
 
 Context: building a Claude Code skill to reproduce the nekRS `tall_cavity_vf_aurora`

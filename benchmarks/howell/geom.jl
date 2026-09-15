@@ -233,7 +233,7 @@ function sphere_to_disk(path; rs, r, a, nsize=nothing)
 end
 
 # ---------------------------------------------------------------------------
-# 2D geometries (per unit depth) — curve meshes, loaded with surface_dim=1.
+# 2D geometries — curve meshes, loaded with surface_dim=1.
 # The cavity surface is meshed only so line normals can be oriented inward.
 # ---------------------------------------------------------------------------
 

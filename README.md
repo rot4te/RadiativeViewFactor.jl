@@ -27,8 +27,7 @@ any format readable by [Gmsh](https://gmsh.info/) is supported, plus XML VTK
   - **3D surface meshes** (`surface_dim=2`): Tri3, Quad4 (1st order); Tri6, Quad8,
     Quad9 (centre node dropped) (2nd order)
   - **2D planar curve meshes** (`surface_dim=1`): Line2 (1st order), Line3
-    (2nd order); computes view factors per unit depth using the 2D kernel
-    cos θᵢ cos θⱼ / (2r)
+    (2nd order); computes view factors using the 2D kernel cos θᵢ cos θⱼ / (2r)
 - Groups radiating geometry by **named physical groups**; view factors reported at both element and group level; rows and columns of `F_group` indexed by `result.group_tags` / `result.group_names`. Formats without named groups (e.g. STL, VTK) fall back to a single synthetic `"default"` group, or — for VTK — a per-cell region array
 - **Three integration methods** selectable per call:
   - *Gauss–Legendre quadrature* (default): pre-tabulated for n ≤ 5, Golub–Welsch algorithm for n > 5; Dunavant rules for triangular elements; 1-D Gauss–Legendre for Line3 curve elements
@@ -74,7 +73,16 @@ RadiativeViewFactor.jl/
 │   ├── common.jl                # Shared mesh generators and timing helpers
 │   ├── quadrature_bench.jl      # Deterministic assembly benchmark (sweeps N)
 │   ├── montecarlo_bench.jl      # Monte Carlo assembly benchmark (sweeps n_samples)
-│   └── RESULTS.md               # Before/after numbers for the pre-evaluation optimization
+│   ├── RESULTS.md               # Before/after numbers for the pre-evaluation optimization
+│   └── howell/                  # Validation against Howell's published configuration-factor catalog
+│       ├── geom.jl              # Gmsh geometry builders for the catalog cases
+│       ├── cases.jl             # Shared case list (geometry + solver options) for run.jl and run_raytrace.jl
+│       ├── tables.jl            # Reference values transcribed from the published Howell catalog tables
+│       ├── analytic.jl          # Closed-form configuration factors from the Howell catalog
+│       ├── run.jl               # Driver: quadrature/Monte Carlo kernels vs. closed-form values
+│       ├── run_raytrace.jl      # Driver: ray-shooting Monte Carlo kernel, appends to results.csv
+│       ├── results.csv          # Accumulated results from both drivers
+│       └── RESULTS.md           # Summary of validation results
 ├── test/
 │   └── runtests.jl
 └── Project.toml
@@ -150,13 +158,13 @@ per pair). 3D meshes only (`mesh_dim=2`), and incompatible with
 `src/RayTraceKernel.jl`'s module docstring for the method and
 `changelog.md` for validation against analytic cases and quadrature.
 
-### 2D planar curve mesh (per unit depth)
+### 2D planar curve mesh
 
 ```julia
 # Physical Curve groups; Line2 (1st-order) or Line3 (2nd-order) elements
 mesh   = load_mesh("planar.msh"; surface_dim=1)
 result = compute_view_factors(mesh; nquad=6)
-# F_group values are view factors per unit depth
+# F_group values are 2D view factors (cos θᵢ cos θⱼ / (2r) kernel)
 
 # Normal orientation is corrected automatically toward the adjacent surface
 # interior (from mesh connectivity, structured or unstructured). If a group
@@ -253,7 +261,7 @@ savefig(fig, "normals.png")
 
 $$F_{ij} = \frac{1}{A_i} \iint_{A_i} \iint_{A_j} \frac{\cos\theta_i \cos\theta_j}{\pi r^2} \ H_{ij} \ dA_j \, dA_i$$
 
-### 2D view factor (curve meshes, per unit depth)
+### 2D view factor (curve meshes)
 
 $$F_{ij} = \frac{1}{L_i} \int_{L_i} \int_{L_j} \frac{\cos\theta_i \cos\theta_j}{2r} \ H_{ij} \ dL_j \ dL_i$$
 

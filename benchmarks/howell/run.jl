@@ -56,7 +56,7 @@ struct Case
   build    :: Function     # path -> writes mesh
   extract  :: Function     # ViewFactorResult -> computed F
   analytic :: Float64
-  dim      :: Int          # 1 = curve mesh (2D, per unit depth), 2 = surface
+  dim      :: Int          # 1 = curve mesh (2D), 2 = surface
   opts     :: NamedTuple   # solver options (reverse_normals, obstruct, nquad)
 end
 Case(id, title, params, build, extract, analytic, dim) =
