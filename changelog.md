@@ -64,7 +64,7 @@ New function (`src/NekExport.jl`, new file) writing a `ViewFactorResult` +
 `load_re2`-sourced `MeshData` to the exact list-directed ASCII format read by
 Nek5000/NekRS's `vf_read_view_factors`:
 
-```
+```fortran
 nwalls
 iw ieg ifc nvwalls
   jw ieg ifc Fij   (nvwalls lines)
@@ -138,6 +138,7 @@ before touching any element geometry:
   `element_pair_view_factor` from `ViewFactorKernel.jl`.
 
 **Verified, in order**:
+
 1. Pure tiling check (constant-function integral through each region
    decomposition, no element geometry involved) converges to 1.0 with
    finer quadrature (0.9995 at n=100 midpoint points) for both vertex and
@@ -1531,3 +1532,63 @@ orientation-bug writeup, the faceting-bias writeup).
 
 **Verified**: full test suite (`Pkg.test()`, 8 threads) passes, including the
 new `reverse_group_normals` tests. Branch: `mc_speedup`.
+
+## Documentation pass: ray-shooting Monte Carlo, corrected Duffy region counts, and a real `load_vtu` export bug found along the way
+
+The `docs/` (Documenter) site had not been updated since `raytrace=true` was
+added (commits `f15c07c`, `272bed9`, `d0807a3`) — it still described three
+integration methods with no mention of ray-shooting Monte Carlo anywhere.
+Separately, `docs/src/theory.md` and `docs/src/manual/integration_methods.md`
+described the Duffy transformation as an 8-region (vertex) / 5-region (edge)
+Sauter–Schwab decomposition; the actual implementation (`src/DuffyKernel.jl`,
+confirmed by reading the region-splitting code directly, not just its own
+stale header comment) is a 4-region / 6-region "biggest-coordinate"
+decomposition — the same discrepancy the top-of-file comment in
+`DuffyKernel.jl` itself has (not corrected in this pass; flagged for a
+follow-up since rewriting that comment block precisely was judged out of
+scope for a docs-only pass).
+
+**Changed**:
+- `docs/src/index.md`, `docs/src/manual/integration_methods.md`,
+  `docs/src/manual/gpu.md`, `docs/src/manual/obstruction.md`,
+  `docs/src/manual/performance.md`: added ray-shooting Monte Carlo coverage
+  (method, GPU kernel, obstruction-is-automatic behavior, `n_rays` guidance,
+  the coarse-mesh faceting-bias limitation, and the 2.9×/26.4× Howell-suite
+  speed comparison already recorded in `benchmarks/howell/RESULTS.md`).
+- `docs/src/theory.md`, `docs/src/manual/integration_methods.md`: corrected
+  the Duffy region counts (8→4 vertex, 5→6 edge) and reframed Sauter &
+  Schwab (2011) as background/related work rather than the implemented
+  method, matching how `README.md` already described it.
+- `docs/src/references.md`, `docs/src/citing.md`: same Duffy reframing;
+  added Cohen & Wallace, *Radiosity and Realistic Image Synthesis* (Academic
+  Press, 1995) as the source for the solid-angle identity the ray-shooting
+  estimator relies on (cited in `RayTraceKernel.jl`'s own module docstring).
+- `CITATION.cff`, `docs/src/citing.md`: version bumped 0.5.0 → 0.6.3
+  (matching `Project.toml`, last bumped 2026-09-14) — both were still
+  pointing at a stale prior release.
+
+**Bug found and fixed while checking the README's own examples against the
+real exported API**: `load_vtu` was documented in `README.md` and
+`docs/src/api.md` as directly callable after `using RadiativeViewFactor`,
+but `src/RadiativeViewFactor.jl` never imported or exported it from
+`MeshIO` — only `RadiativeViewFactor.MeshIO.load_vtu` actually resolved.
+Confirmed with `isdefined(RadiativeViewFactor, :load_vtu) == false` before
+the fix. Added `load_vtu` to the `using .MeshIO: ...` import list and the
+top-level `export` list; verified `isdefined(...) == true` and a fresh
+`using RadiativeViewFactor; load_vtu` resolves after the change. Every
+other loader (`load_mesh`, `load_re2`) was already exported this way, so
+this was a straightforward oversight rather than an intentional namespacing
+choice.
+
+**Follow-up (same day)**: rewrote `DuffyKernel.jl`'s own module header
+comment (the "Reference elements" / decomposition-overview sections) and
+the `element_pair_view_factor_duffy` docstring, which both still described
+the old 8-region (vertex) / 5-region (edge) Sauter–Schwab scheme even though
+the code beneath them was already correct. Now describes the actual 4-region
+/ 6-region "biggest-coordinate" decomposition and points to the detailed,
+already-accurate comments above `_vertex_integral` and `_edge_integral`
+rather than re-deriving them. No code changed, comments only. **Verified**:
+package loads and `Pkg.test()` passes (re-run twice; one earlier run in this
+same session had one unrelated flaky failure in the stochastic GPU raytrace
+reciprocity test, which passed on immediate rerun with no code changes in
+between — see [[docs-known-issues]] memory).

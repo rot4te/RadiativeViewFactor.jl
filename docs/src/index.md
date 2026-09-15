@@ -11,18 +11,23 @@ RadiativeViewFactor.jl evaluates the double-surface integral that defines the
 geometric view factor between pairs of finite surfaces. The geometry is supplied
 as a mesh: the solver works from element node connectivity alone, so structured
 and unstructured meshes are treated identically, and 1st- and 2nd-order elements
-may be mixed freely. Three integration strategies are available:
+may be mixed freely. Four integration strategies are available:
 
 - **Gauss–Legendre quadrature** — the default; spectral convergence for smooth
   geometries
-- **Monte Carlo** — stratified area sampling; advantageous when many obstructions
-  are present or near-singular pairs exist
-- **Duffy transformation** — Sauter–Schwab singularity regularization for Quad8
-  element pairs sharing a vertex or edge; gives accurate results for inclined
-  surfaces with common edges
+- **Monte Carlo (pair-area sampling)** — stratified sampling of point pairs on
+  each element pair; advantageous when many obstructions are present or
+  near-singular pairs exist
+- **Duffy transformation** — singularity-regularizing change of variables for
+  Quad4/Quad8 element pairs sharing a vertex or edge; gives accurate results
+  for inclined surfaces with common edges
+- **Monte Carlo (ray-shooting)** — cosine-weighted rays shot from each element
+  into the whole scene at once; the fastest method for large or obstructed 3D
+  meshes, since obstruction and visibility fall out of the same BVH query
 
-All three methods support **obstruction detection** via a BVH-accelerated ray
-casting, and all work on CPU and GPU backends (Duffy is CPU-only).
+Quadrature, pair-area Monte Carlo, and Duffy support **obstruction detection**
+via BVH-accelerated ray casting, and all four methods work on CPU; quadrature,
+both Monte Carlo variants, and obstruction work on GPU too (Duffy is CPU-only).
 
 ## Installation
 

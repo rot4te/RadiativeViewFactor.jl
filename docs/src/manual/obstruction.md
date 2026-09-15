@@ -36,9 +36,18 @@ no thread-local stack, eliminating register pressure from MVector storage.
 Per-triangle group tags stored in the BVH allow each thread to skip triangles
 belonging to the emitter or receiver group without host-side pre-filtering.
 
+## Ray-shooting Monte Carlo is different
+
+`raytrace=true` builds one scene BVH from every radiating element plus
+`obstruction_groups`, so **radiating elements obstruct each other
+automatically** without being listed in `obstruction_groups` — that argument
+only adds *extra* non-radiating blocker geometry for this method. See
+[Integration Methods](@ref).
+
 ## Compatibility
 
-Obstruction detection works with all three integration methods:
+Obstruction detection works with quadrature, pair-area Monte Carlo, and
+Duffy the same way:
 
 ```julia
 # Quadrature + obstruction

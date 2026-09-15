@@ -32,16 +32,32 @@ spanning many orders of magnitude, Float32 rounding (~1e-7 relative) may
 introduce small errors in individual element-pair values that are generally
 negligible after group-level aggregation.
 
-## Monte Carlo on GPU
+## Monte Carlo (pair-area) on GPU
 
-Both backends support Monte Carlo integration. Each GPU thread uses an
-independent xorshift64 pseudo-random stream derived from a per-call global
+Both backends support pair-area Monte Carlo integration. Each GPU thread uses
+an independent xorshift64 pseudo-random stream derived from a per-call global
 seed and the thread index. The `rng` keyword is ignored on GPU backends.
 
 ```julia
 result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000,
                                backend=CUDABackend())
 ```
+
+## Monte Carlo (ray-shooting) on GPU
+
+Ray-shooting Monte Carlo (`raytrace=true`) has its own GPU kernel, one thread
+per *element* rather than per element pair — each thread shoots `n_rays`
+cosine-weighted rays from its element into a scene BVH covering the whole
+radiating mesh, so obstruction among radiating elements is automatic:
+
+```julia
+result = compute_view_factors(mesh; raytrace=true, n_rays=10000,
+                               backend=CUDABackend())
+```
+
+It is incompatible with `self_vf=true` and with `monte_carlo=true`, and is
+3D-surface-mesh only. See [Integration Methods](@ref) for the method itself
+and its known faceting-bias limitation on coarsely meshed curved bodies.
 
 ## Obstruction on GPU
 
@@ -59,7 +75,8 @@ result = compute_view_factors(mesh; nquad=4, backend=CUDABackend(),
 
 - `surface_dim=1` (curve meshes) is not supported on GPU; use `CPU()`
 - `use_duffy=true` is CPU-only; it is silently ignored on GPU backends
-- `self_vf=true` is CPU-only
+- `self_vf=true` is CPU-only, and is also incompatible with `raytrace=true`
+  on any backend
 
 ## Performance crossover
 
@@ -68,7 +85,12 @@ GPU backends outperform CPU (8 threads) approximately when:
 | Method | Elements N |
 |---|---|
 | Quadrature | N ≳ 300–500 |
-| Monte Carlo | N ≳ 200 |
+| Monte Carlo (pair-area) | N ≳ 200 |
+
+Ray-shooting Monte Carlo has not had a CPU/GPU crossover point measured this
+way; on CPU it already outperforms both other methods by 3–25× on the Howell
+benchmark suite (see [Integration Methods](@ref)), so a GPU comparison would
+need its own benchmark rather than reusing the pair-area numbers above.
 
 For smaller meshes, kernel JIT compilation and host↔device data transfer
 dominate the runtime. Metal is typically 2–5× slower than a comparable NVIDIA
