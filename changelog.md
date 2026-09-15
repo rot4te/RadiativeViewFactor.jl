@@ -1592,3 +1592,15 @@ package loads and `Pkg.test()` passes (re-run twice; one earlier run in this
 same session had one unrelated flaky failure in the stochastic GPU raytrace
 reciprocity test, which passed on immediate rerun with no code changes in
 between — see [[docs-known-issues]] memory).
+
+## `Project.toml`: added missing `[compat]` entries for stdlib dependencies (General registry prep)
+
+The user asked how to register this package on the Julia General registry.
+Checking `Project.toml` against General's AutoMerge requirements found that
+`LinearAlgebra`, `Random`, `SparseArrays`, and `Statistics` were all present
+in `[deps]` but had no `[compat]` bound — AutoMerge requires a compat entry
+for every dependency, stdlibs included, so this would have failed the
+automated registration check. Added `= "1"` for all four, matching the
+convention already used for `Printf`, `StaticArrays`, and `Test` in the same
+file. No other change. **Verified**: `Pkg.resolve()` reports no change to
+`Project.toml`/`Manifest.toml`, package loads, and `Pkg.test()` passes.
