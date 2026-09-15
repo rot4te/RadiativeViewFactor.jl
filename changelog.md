@@ -988,3 +988,98 @@ the mesh.
 `radiating` case option and prefix guard, extended CSV, stdout flush),
 `benchmarks/howell/RESULTS.md` (regenerated tables, new System, Runtimes and
 Restricted assembly sections), `benchmarks/howell/results.csv` (regenerated).
+
+# 2026-09-15
+
+Context: the Howell benchmark (above) showed the CPU Monte Carlo kernel
+running 6x-221x slower than quadrature per case (see
+`benchmarks/howell/RESULTS.md`, "Runtimes"), in contrast to MC's usual
+speed advantage on complex geometry. Investigated where the MC assembly
+time actually goes (per-case wall-time split, per-pair micro-benchmarks) and
+made three changes that reduce it without changing what is estimated.
+
+**Investigation** (no source changed at this stage; scratch scripts, not
+committed): splitting `compute_view_factors(monte_carlo=true)`'s wall time
+into element sampling, the O(N²) pair loop, and the (then-serial)
+adjacent-pair Duffy patch showed the pair loop was 80-100% of MC time across
+six Howell cases spanning Quad8, Tri6 and Line3 (obstructed and
+unobstructed). A per-pair micro-benchmark on one Quad8 pair then showed the
+per-sample `rand(rng, 1:n)` index in `element_pair_view_factor_mc`
+(`src/MCKernel.jl`) cost about half the per-pair time (26.9 µs -> 13.0 µs
+without it), because indexing the second element's samples out of order
+defeats prefetching — matching the cost this same function's own docstring
+had already measured and attributed to that index. Replacing it with a
+same-index (sequential) pairing after storing each element's samples in a
+random (`randperm`) order gave the same speedup *and*, measured over 400
+trials, roughly 5x lower per-pair standard deviation (5.0e-4 -> 1.0e-4
+relative) than the random-index version it replaced — not the single-offset
+scheme the old docstring warned against (that preserves adjacency between
+stratum indices and correlates nearby terms; a `randperm` does not).
+
+## 1. `sample_element_mc` stores samples in random order; `element_pair_view_factor_mc` pairs them sequentially
+
+Changed `sample_element_mc` to apply one `randperm(rng, n)` to the drawn
+samples before storing them in `ElementSamples`. `element_pair_view_factor_mc`
+now pairs same-index samples (`xs_i[k]` with `xs_j[k]`) instead of drawing a
+fresh random index per sample. Because both arrays are independently
+shuffled, this still pairs each `xᵢ[k]` with a uniformly random `xⱼ` — the
+estimator is unchanged, only how the random matching is generated. `rng` is
+still accepted by `element_pair_view_factor_mc` for API stability but is no
+longer used inside it (all randomness was already spent when the samples
+were drawn).
+
+Verified on 5 assembly-level Howell cases (`benchmarks/howell/`, 6 seeds
+each, `n_samples=5000`) spanning Quad8 (C-11, C-40), Tri6 (C-135), Line3
+(C-68), and an obstructed Line3 case (C-8): group-level view-factor noise
+(std. dev. across seeds) was equal to or lower than before the change in
+every case, and wall time dropped 1.25x-2.8x on the unobstructed cases
+(C-135: 7.8s -> 2.8s; C-40: 3.2s -> 2.0s; C-11: 1.2s -> 0.84s). C-8, which is
+dominated by BVH ray casts rather than the pairing itself, was not
+meaningfully affected by this change alone.
+
+**Files**: `src/MCKernel.jl` (`sample_element_mc`,
+`element_pair_view_factor_mc`, docstrings).
+
+## 2. `n_samples` default lowered 10000 -> 5000
+
+The MC estimator's own noise at `n_samples=5000` is typically 10x-1000x
+smaller than the mesh's own discretization error against the analytic
+answer (measured across the same 5 Howell cases above): e.g. C-135's noise
+sd is 2.5e-6 against a 2.5e-4 systematic mesh error, C-8's is 9.3e-6 against
+1.4e-2. The previous default of 10000 samples was mostly paying for
+precision the mesh could not use. `n_samples=5000` is also the exact value
+already validated across the full 115-point Howell catalog suite
+(`benchmarks/howell/RESULTS.md`: 96% of points within 1% of the published
+value, median error 0.008%), so this is not a new, unvalidated setting.
+
+**Files**: `src/Assembly.jl` (`compute_view_factors` and `_compute_cpu`
+keyword defaults, docstring).
+
+## 3. Adjacent-pair Duffy patch is threaded; those pairs are skipped in the MC bulk loop
+
+`compute_view_factors(monte_carlo=true)` always overwrites near/adjacent
+element pairs (found by `near_pairs`) with a deterministic Duffy-transform
+value after the MC bulk pass, because the 1/r² kernel has unbounded MC
+variance there — so whatever the bulk loop computes for those O(N) pairs is
+discarded. `patch_adjacent_pairs_duffy!` (`src/DuffyKernel.jl`) now applies
+those patches with `Threads.@threads` instead of serially (each pair writes
+distinct matrix entries, and the obstruction-BVH cache it reads through was
+already lock-guarded — see the 2026-09-14 entry above). `_compute_cpu`
+(`src/Assembly.jl`) now computes `near_pairs` once, before the MC bulk loop,
+and uses it both to skip those pairs in the bulk loop (saving `n_samples`
+wasted kernel evaluations, and BVH ray casts where obstruction is enabled,
+per pair) and as the patch's input, instead of the patch recomputing the
+same list afterward. Curve meshes (`mesh_dim == 1`), where the Duffy patch
+is a no-op, get an empty pair list so nothing is skipped there — verified
+this doesn't silently zero out 2-D adjacent pairs, since skipping without a
+patch would leave them at their initialized 0.0 permanently.
+
+**Files**: `src/DuffyKernel.jl` (`patch_adjacent_pairs_duffy!` threaded,
+takes optional precomputed `pairs`), `src/Assembly.jl` (`_compute_cpu`
+computes and reuses `near_pairs` once).
+
+**Verified**: full test suite (`Pkg.test()`, 8 threads) passes unchanged,
+including the two tests that exercise these paths directly — "MC pair
+estimator is unbiased for coarse elements" (`test/ray_test.jl`) and "Monte
+Carlo + near-pair Duffy patch closes the cube" (`test/duffy_correctness_test.jl`).
+Branch: `mc_speedup`.
