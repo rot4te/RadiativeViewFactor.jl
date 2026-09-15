@@ -1125,3 +1125,177 @@ including the two tests that exercise these paths directly — "MC pair
 estimator is unbiased for coarse elements" (`test/ray_test.jl`) and "Monte
 Carlo + near-pair Duffy patch closes the cube" (`test/duffy_correctness_test.jl`).
 Branch: `mc_speedup`.
+
+## New CPU kernel: ray-shooting Monte Carlo (`compute_view_factors(...; raytrace=true)`)
+
+Context: even with the §1-§3 speedups above, the existing (pair-area
+sampling) Monte Carlo kernel is architecturally O(N²) — it always pays a
+point-pair visibility check per element pair, the same complexity class as
+quadrature, just with a larger constant. Real ray-tracing view-factor codes
+get their speed advantage on complex/obstructed geometry from a genuinely
+different algorithm (O(N) rays per element against one whole-scene BVH, not
+O(N²) pairs), which this package didn't have. Investigated and then
+implemented that algorithm as a new, independent CPU kernel.
+
+### The method
+
+For each element i, draw a point on it (uniform by area) and a direction
+from the cosine-weighted hemisphere around its normal (pdf ∝ cos θ), then
+find the first surface that ray hits via one nearest-hit BVH query over the
+*whole* radiating mesh. Because dA_j cos θ_j / r² = dΩ (the definition of
+solid angle), cosine-weighted sampling's pdf exactly cancels the cos θ_i
+factor in the view-factor kernel, so `E[1(first hit is j)] = F_{x→j}`
+(the point-to-area form factor, occlusion included) — no explicit 1/r²,
+cos θ_j, or separate visibility test needed; obstruction is a side effect
+of the same nearest-hit query. This is the standard Monte Carlo
+"ray-shooting"/"shooting rays" view-factor method (see e.g. Walker (1998),
+*Review of methods used to compute view factors*; the underlying solid-angle
+identity is standard, e.g. Cohen & Wallace, *Radiosity and Realistic Image
+Synthesis*, or Siegel & Howell, *Thermal Radiation Heat Transfer*).
+
+### Prototyped first, in scratch scripts, not committed
+
+Before writing any `src/` code: implemented the method standalone, reusing
+`BVH.build_bvh` and the package's own ray/triangle and ray/AABB tests by
+qualified (non-exported) access rather than duplicating that fragile
+geometry code. Validated against known cases, catching two real findings
+before any of this reached `src/`:
+
+- **A front/back-face bug.** The first version attributed *any* nearest hit
+  to its owning element, with no check on which face was struck. On a
+  synthetic 3-body test scene (two facing plates + a third plate at the
+  midplane as a full blocker, never listed in `obstruction_groups`), this
+  gave F(bottom→blocker) = 0.411 from ray-shooting vs 0.0 from the existing
+  quadrature kernel on the same pair — traced to the blocker's normal
+  facing away from the source (a genuine back-face hit), which must be
+  geometrically blocking (an opaque surface blocks a ray incident on either
+  face) but must *not* count as landing on that element — exactly the
+  `cos θ_j <= 0 → K = 0` check `MCKernel.jl`'s pair kernel already makes,
+  just needed here too, evaluated on whichever element the ray actually
+  hit. Fixed by computing the hit triangle's own normal and checking
+  `dot(normal, -direction) > 0`; reversing the test blocker's winding then
+  brought quadrature to 0.415, matching ray-shooting within MC noise.
+- **Quadrature itself was the less accurate reference, on a sharp
+  obstruction shadow boundary.** A blocker covering 80% of the aperture
+  (thin visible rim) gave ray-shooting 0.0192-0.0193 (tight, multi-seed:
+  mean over 10 seeds 0.01925, sd(mean) 4.8e-5) against a coarse
+  quadrature+obstruction reference of 0.0172 — a 43σ disagreement by
+  ray-shooting's own noise estimate, i.e. not noise. Refining the
+  quadrature mesh/order (n=6→24 elements/plate, nquad=6→10) moved
+  quadrature's answer from 0.0172 to 0.0189 to 0.0193, converging onto
+  ray-shooting's value — confirming the coarse quadrature was under-resolved
+  (fixed-order polynomial quadrature integrates a sharp visibility
+  discontinuity poorly; Monte Carlo hit-counting has no such difficulty),
+  not a ray-shooting bug.
+- **Speed**, on a synthetic obstructed 3-plate scene (bottom/top plates +
+  partial blocker, `n_samples`/`n_rays`=5000 both sides): ray-shooting was
+  12.6x faster than quadrature and 48x faster than the pair-area MC kernel
+  at 836 elements, with cost barely growing (5x for 11x more elements)
+  where the other two scale close to O(N²) — see the table below for the
+  same comparison against the real `src/` implementation.
+
+### The real implementation
+
+- **`src/BVH.jl`**: new `nearest_hit_bvh(bvh, origin, direction; t_min,
+  skip)` — closest-hit traversal (standard shrinking-tmax pruning),
+  alongside the existing any-hit `intersect_ray_bvh`. No winding culling,
+  same convention as `intersect_ray_bvh`. `skip(tri_idx)` excludes
+  candidates (e.g. the ray's own origin element) without losing their
+  AABB-pruning benefit; chosen over a `t_min` epsilon because a self-hit's
+  `t` is only ever *near* zero by floating point, not reliably
+  distinguishable from a genuine nearby hit at grazing incidence.
+- **`src/RayTraceKernel.jl`** (new module): `SceneBVH` (the merged scene
+  BVH + a triangle→element index map), `build_scene_bvh` (corner-triangulates
+  every radiating element — same v1,v2,v3/v1,v3,v4 split
+  `MeshIO._build_group_obs_soups` already uses, so this is consistent with
+  the faceting the rest of the package already applies to curved 2nd-order
+  elements for occlusion — plus any `obstruction_groups` geometry not
+  already part of the radiating set, tagged 0 as an opaque non-target),
+  `cosine_dir` (branchless orthonormal-basis cosine-weighted hemisphere
+  sampling — Duff et al., *Building an Orthonormal Basis, Revisited*, JCGT
+  2017), and `raytrace_element` (shoots `n_rays` from one element, tallying
+  front-face hits per target element, escaped rays, and absorbed/back-face
+  rays).
+- **`src/Assembly.jl`**: new `raytrace::Bool=false` / `n_rays::Int=10000`
+  keywords on `compute_view_factors`. CPU-only; 3-D meshes only
+  (`mesh_dim=2`); errors if combined with `monte_carlo=true` or `self_vf=true`
+  (a ray is never tested against its own origin element — self-view is not
+  supported by this kernel). `use_duffy`/the near-pair patch/`factor`/
+  `facing_cull` do not apply (no singular pairs, no O(N²) pair loop to
+  cull). **Reciprocity by construction**: every unordered pair {i,j} gets
+  two independent raw-integral estimates (from i's rays and from j's);
+  `_compute_cpu_raytrace` averages them into one shared value before
+  dividing back out to F, the same `raw[i,j] == raw[j,i]` convention the
+  other CPU paths already use — this makes results exactly symmetric
+  despite being stochastic, and is also lower-variance than either row's
+  estimate alone (averaging two independent unbiased estimates). One
+  consequence: row sums on a closed enclosure are only *approximately* 1
+  (ordinary MC noise, ~1e-3 at `n_rays`=50000 in testing) rather than exact
+  to machine precision — each element's own rays alone would close exactly,
+  but every off-diagonal entry blends in the *other* element's independent
+  estimate too.
+- Element areas (`A_elem`) come from quadrature (`precompute_quad`), not
+  from the rays — there is no ray-based area estimate, and this keeps areas
+  exact rather than adding noise to a quantity that didn't need it.
+
+### A real behavioural difference from the other two kernels, not a bug
+
+Because every radiating element is already in the scene BVH, radiating
+elements obstruct each other **automatically**, with no need to list them
+in `obstruction_groups`. The other two kernels only apply an obstruction
+check for groups explicitly listed there (see the existing note 3 in this
+changelog: "a group never obstructs a pair involving itself"). This means
+`raytrace=true` can give a genuinely different (more physically complete)
+answer than the other kernels on the same mesh with the same
+`obstruction_groups=[]`, if the user's mesh has radiating bodies that
+occlude each other but were never told to. Documented prominently in both
+the `compute_view_factors` docstring and `RayTraceKernel.jl`'s module
+docstring.
+
+### Verified
+
+- New `test/raytrace_test.jl` (16 tests): unbiased against the analytic
+  two-plate value (`n_rays=200000`, `rtol=5e-3`) with exact reciprocity;
+  closed-cube row-sum closure (`atol=0.01`, see the row-sum caveat above)
+  and agreement with quadrature; the front/back-face regression case from
+  prototyping (a correctly-oriented blocker now matches quadrature to
+  within MC noise); self-obstruction without `obstruction_groups` on a
+  partial-blocker case (`rtol=0.05` against quadrature+`obstruction_groups`
+  on the same mesh); argument validation
+  (`monte_carlo=true`/`self_vf=true` combined with `raytrace=true` both
+  error); `@inferred` type stability on `build_scene_bvh`,
+  `raytrace_element`, `cosine_dir`, `nearest_hit_bvh`.
+- Full test suite (`Pkg.test()`, 8 threads): all tests pass, including the
+  new file.
+- Speed, real `src/` implementation, same synthetic obstructed 3-plate scene
+  as the prototype (`n_samples`/`n_rays`=5000, `nquad`=6, both quadrature and
+  pair-area MC using `obstruction_groups=[3]`; ray-shooting using neither):
+
+| Elements | quadrature | pair-area MC | ray-shooting | RT vs quad | RT vs pair-area MC |
+|---:|---:|---:|---:|---:|---:|
+| 76  | 0.052 s | 0.105 s  | 0.017 s | 3.1x  | 6.2x  |
+| 304 | 0.340 s | 1.316 s  | 0.069 s | 4.9x  | 19.1x |
+| 836 | 3.063 s | 11.927 s | 0.264 s | 11.6x | 45.2x |
+
+(Reported group-level F values agreed within MC noise across all three
+kernels at every size, 0.0985-0.0998.) Cost is barely growing for
+ray-shooting (0.017 → 0.069 → 0.264 s, ~15x for 11x more elements) where the
+other two scale close to O(N²) (quadrature ~59x, pair-area MC ~114x for the
+same 11x) — the expected complexity advantage, reproduced (and slightly
+exceeded) by the real `src/` implementation versus the scratch prototype.
+
+**Files**: `src/BVH.jl` (`nearest_hit_bvh`), `src/RayTraceKernel.jl` (new),
+`src/RadiativeViewFactor.jl` (include order), `src/Assembly.jl`
+(`raytrace`/`n_rays` arguments, `_compute_cpu_raytrace`), `test/raytrace_test.jl`
+(new), `test/runtests.jl` (registration), `README.md` (usage section, file
+tree). Branch: `mc_speedup`.
+
+### Not done / scope of this pass
+
+No GPU ray-tracing kernel (CPU only). No 2-D curve-mesh (`mesh_dim=1`)
+support. No `self_vf` support. Not run against the `benchmarks/howell/`
+catalog suite (only the focused `test/raytrace_test.jl` cases above) — a
+natural follow-up, and the more convincing accuracy evidence long-term.
+Corner-triangulation faceting bias on curved 2nd-order elements (same
+caveat the existing obstruction soups already carry) not separately
+quantified for this kernel.

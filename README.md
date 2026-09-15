@@ -56,7 +56,8 @@ RadiativeViewFactor.jl/
 │   ├── RayCast.jl               # CPU visibility test; dispatches on mesh_dim
 │   ├── ViewFactorKernel.jl      # 3D and 2D deterministic kernels; element-pair integrator
 │   ├── DuffyKernel.jl           # Sauter–Schwab Duffy transformation for singular pairs
-│   ├── MCKernel.jl              # CPU Monte Carlo integrator with stratified sampling
+│   ├── MCKernel.jl              # CPU Monte Carlo integrator with stratified sampling (pair-area)
+│   ├── RayTraceKernel.jl        # CPU Monte Carlo integrator via ray-shooting (whole-scene BVH)
 │   ├── Results.jl               # ViewFactorResult, _aggregate, check functions
 │   ├── GPUBVH.jl                # Stackless flat BVH for GPU: build + inline traversal
 │   ├── GPUKernels.jl            # KernelAbstractions deterministic kernels (Quad4/8 + Tri3/6)
@@ -119,6 +120,29 @@ using Random
 result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000,
                                rng=MersenneTwister(42))
 ```
+
+### Ray-shooting Monte Carlo (fastest for large or obstructed 3D meshes)
+
+```julia
+result = compute_view_factors(mesh; raytrace=true, n_rays=10000)
+
+using Random
+result = compute_view_factors(mesh; raytrace=true, n_rays=10000, rng=Xoshiro(42))
+```
+
+A different Monte Carlo method from `monte_carlo=true` above, not a faster
+version of it: instead of sampling point pairs on each element pair
+(O(N²) pairs × `n_samples`), it shoots `n_rays` cosine-weighted rays per
+*element* and tallies which element each first hits, via one BVH over the
+whole radiating mesh (O(N · n_rays · log N)). This makes obstruction a side
+effect of the same query — **radiating elements obstruct each other
+automatically**, without needing `obstruction_groups`; that argument only
+adds *extra* non-radiating blocker geometry here. There is also no
+adjacent-pair singularity (it never evaluates 1/r²), so no Duffy patch is
+needed. 3D meshes only (`mesh_dim=2`), CPU only, and incompatible with
+`self_vf`. See the `compute_view_factors` docstring and
+`src/RayTraceKernel.jl`'s module docstring for the method and
+`changelog.md` for validation against analytic cases and quadrature.
 
 ### 2D planar curve mesh (per unit depth)
 

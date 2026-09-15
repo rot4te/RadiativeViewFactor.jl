@@ -14,7 +14,8 @@ include("BVH.jl")
 include("RayCast.jl")
 include("ViewFactorKernel.jl")
 include("DuffyKernel.jl")   # Sauter-Schwab Duffy transformation for singular pairs
-include("MCKernel.jl")      # CPU Monte Carlo integrator
+include("MCKernel.jl")      # CPU Monte Carlo integrator (pair-area sampling)
+include("RayTraceKernel.jl") # CPU Monte Carlo integrator (ray-shooting)
 include("Results.jl")       # ViewFactorResult, _aggregate — no upstream deps
 include("NekExport.jl")     # write_nekrs_view_factors — depends on MeshIO + Results
 include("GPUBVH.jl")
