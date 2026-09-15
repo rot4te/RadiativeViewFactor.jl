@@ -15,6 +15,7 @@ include("ViewFactorKernel.jl")
 include("DuffyKernel.jl")   # Sauter-Schwab Duffy transformation for singular pairs
 include("MCKernel.jl")      # CPU Monte Carlo integrator
 include("Results.jl")       # ViewFactorResult, _aggregate — no upstream deps
+include("NekExport.jl")     # write_nekrs_view_factors — depends on MeshIO + Results
 include("GPUBVH.jl")
 include("GPUKernels.jl")
 include("GPUMCKernels.jl")  # GPU Monte Carlo kernel
@@ -24,6 +25,7 @@ include("GPUAssembly.jl")   # imports Results + Assembly.register_gpu_hook!;
 
 using .MeshIO:    load_mesh, load_re2, MeshData
 using .MeshIO:    SurfaceElement
+using .MeshIO:    split_groups_by_tag
 using .Geometry:  quad8_physical_point, quad8_normal_and_area_element,
                   quad4_shape, quad4_physical_point, quad4_normal_and_area_element,
                   line2_shape, line2_physical_point, line2_normal_and_length_element,
@@ -31,6 +33,7 @@ using .Geometry:  quad8_physical_point, quad8_normal_and_area_element,
 using .Results:   ViewFactorResult, aggregate_by_group,
                   check_reciprocity, check_closure
 using .Assembly:  compute_view_factors
+using .NekExport: write_nekrs_view_factors
 
 export load_mesh,
        load_re2,
@@ -38,9 +41,11 @@ export load_mesh,
        aggregate_by_group,
        check_reciprocity,
        check_closure,
+       write_nekrs_view_factors,
        plot_mesh_normals,
        MeshData,
        SurfaceElement,
+       split_groups_by_tag,
        ViewFactorResult,
        quad8_physical_point,
        quad8_normal_and_area_element,

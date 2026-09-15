@@ -200,9 +200,9 @@ area `ref_area`, and sample count `n`.
 
 Drawing these once per element (O(N)) and reusing them across all element pairs
 avoids the O(N²) re-sampling a naive pairwise loop incurs. Each per-pair
-estimate stays unbiased: `xs` is uniform on the element and is paired with the
-other element's independent samples by stratum index, exactly as in the
-on-the-fly path.
+estimate stays unbiased: `xs` is uniform on the element, and the pair kernel
+pairs each sample of one element with a uniformly random sample of the other
+(see [`element_pair_view_factor_mc`](@ref)).
 """
 struct ElementSamples
     xs       :: Vector{SVector{3,Float64}}
@@ -267,20 +267,30 @@ function element_pair_view_factor_mc(coords   ::Matrix{Float64},
 
     si = sample_element_mc(coords, elem_i, n_samples, rng)
     sj = sample_element_mc(coords, elem_j, n_samples, rng)
-    return element_pair_view_factor_mc(si, sj, bvh, mesh_dim)
+    return element_pair_view_factor_mc(si, sj, bvh, mesh_dim, rng)
 end
 
 """
-    element_pair_view_factor_mc(si::ElementSamples, sj::ElementSamples, bvh, mesh_dim) -> (raw, Ai)
+    element_pair_view_factor_mc(si::ElementSamples, sj::ElementSamples, bvh,
+                                 mesh_dim, rng) -> (raw, Ai)
 
 Fast path used by the assembly loop: estimate the raw double integral from
 pre-drawn samples ([`sample_element_mc`](@ref)). `si` and `sj` must hold the
 same number of samples.
+
+Both sample sets are stratified in the same deterministic stratum order, so
+pairing them by index would sample only the "diagonal" stratum blocks of the
+product domain and bias the estimate.  Instead, each sample of `si` is paired
+with a uniformly random sample of `sj` (drawn from `rng`): a random stratum
+plus its stratified jitter is exactly uniform on the element, so every pair
+term is unbiased while xᵢ keeps its stratification.
 """
 function element_pair_view_factor_mc(si      ::ElementSamples,
                                       sj      ::ElementSamples,
                                       bvh     ::Union{BVHTree,Nothing},
-                                      mesh_dim::Int)::Tuple{Float64,Float64}
+                                      mesh_dim::Int,
+                                      rng     ::AbstractRNG = Random.default_rng()
+                                      )::Tuple{Float64,Float64}
     do_vis = bvh !== nothing
     is_2d  = mesh_dim == 1
     n      = si.n
@@ -289,8 +299,13 @@ function element_pair_view_factor_mc(si      ::ElementSamples,
 
     K_sum = 0.0
     @inbounds for k in 1:n
-        xi = xs_i[k]; ni = ns_i[k]; dAi = dAs_i[k]
-        xj = xs_j[k]; nj = ns_j[k]; dAj = dAs_j[k]
+        # Pair the k-th (stratified) sample of element i with a uniformly
+        # random sample of element j — uniform over the pre-drawn set is
+        # exactly uniform on the element.
+        kj = rand(rng, 1:n)
+
+        xi = xs_i[k];  ni = ns_i[k];  dAi = dAs_i[k]
+        xj = xs_j[kj]; nj = ns_j[kj]; dAj = dAs_j[kj]
 
         K = is_2d ? _kernel_2d(xi, ni, xj, nj) :
                     _kernel_3d(xi, ni, xj, nj)

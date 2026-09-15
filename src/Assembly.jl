@@ -12,7 +12,8 @@ import ..BVH:              BVHTree, build_bvh
 import ..ViewFactorKernel: element_pair_view_factor, precompute_quad, ElementQuad
 import ..MCKernel:         element_pair_view_factor_mc, sample_element_mc,
                            ElementSamples
-import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type
+import ..DuffyKernel:      element_pair_view_factor_duffy, singularity_type,
+                           patch_adjacent_pairs_duffy!
 import ..Results:          ViewFactorResult, _aggregate, aggregate_by_group,
                            check_reciprocity, check_closure
 
@@ -21,7 +22,8 @@ export compute_view_factors,
        check_reciprocity,
        check_closure,
        ViewFactorResult,
-       register_gpu_hook!
+       register_gpu_hook!,
+       build_bvh_lookup
 
 """
     compute_view_factors(mesh; nquad=4, obstruction_groups=Int[],
@@ -33,23 +35,50 @@ Assemble the full view factor matrix at element and physical-group level.
 # Arguments
 - `mesh`                : `MeshData` returned by `load_mesh`
 - `nquad`               : Gauss points per direction; `nquad²` points per surface
-                          element pair, `nquad` per curve element pair.
-                          Ignored when `monte_carlo=true`.
+                          element pair, `nquad` per curve element pair. When
+                          `monte_carlo=true`, only used for the adjacent-pair
+                          Duffy patch (see `monte_carlo` below), not the bulk
+                          sampling.
 - `obstruction_groups`  : physical group tags that may occlude rays. Source and
                           destination groups are excluded automatically per pair.
+                          Not applied to the Monte Carlo adjacent-pair patch —
+                          two elements sharing a vertex/edge cannot have a
+                          third surface positioned between them.
 - `backend`             : `CPU()` (default), `CUDABackend()`, or `MetalBackend()`
 - `self_vf`             : include self view factors (concave elements). CPU only.
 - `monte_carlo`         : use stratified Monte Carlo area-sampling instead of
-                          Gauss–Legendre quadrature. Works on all backends.
-                          Incompatible with `use_duffy=true`.
+                          Gauss–Legendre quadrature for the O(N²) bulk of
+                          element pairs — the fastest option for large meshes,
+                          especially on GPU. The 1/r² kernel has *unbounded*
+                          variance for pairs sharing a vertex or edge, so no
+                          amount of sampling fixes those; this function
+                          therefore always patches those O(N) pairs
+                          afterward with the deterministic Duffy transform
+                          (CPU-only, using `nquad` above), on top of
+                          whichever backend the bulk ran on. `use_duffy` has
+                          no separate effect here — the patch is
+                          unconditional whenever `monte_carlo=true`.
 - `n_samples`           : MC sample pairs **per element pair**. Ignored when
-                          `monte_carlo=false`. Variance decreases as O(1/N).
+                          `monte_carlo=false`. Variance decreases as O(1/N)
+                          for the (non-adjacent) pairs Monte Carlo handles.
 - `rng`                 : RNG for the CPU MC path. Pass a seeded RNG (e.g.
                           `MersenneTwister(42)`) for reproducible results.
                           Ignored on GPU.
-- `use_duffy`           : apply the Sauter–Schwab Duffy transformation for Quad8
-                          element pairs sharing a vertex or edge. CPU only;
-                          incompatible with `monte_carlo=true`.
+- `use_duffy`           : apply the Duffy singularity transformation (see
+                          `DuffyKernel.jl`) for same-order quad pairs (Quad4
+                          or Quad8) sharing a vertex or edge, in the plain
+                          quadrature path. CPU only. Ignored when
+                          `monte_carlo=true` (that path always Duffy-patches
+                          adjacent pairs regardless of this flag).
+- `factor`              : near-pair patch radius, in element diameters (see
+                          `near_pairs` in `DuffyKernel.jl`) — only used when
+                          `monte_carlo=true`, to decide which O(N) pairs get
+                          the deterministic Duffy patch instead of the raw
+                          MC estimate. Raising it does not, by itself, make
+                          those pairs more accurate — `nquad` (above) is
+                          what governs the patch's own resolution, and is
+                          the more effective lever for closure error on
+                          meshes with large or elongated elements.
 - `verbose`             : print progress and row-sum diagnostics
 
 # Returns
@@ -59,7 +88,9 @@ A `ViewFactorResult`.
 ```julia
 result = compute_view_factors(mesh; nquad=6)
 result = compute_view_factors(mesh; nquad=6, use_duffy=true)
-result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000)
+result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000)               # CPU
+result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000,
+                               backend=CUDABackend())                                 # GPU — fastest for large meshes
 ```
 """
 function compute_view_factors(mesh               ::MeshData;
@@ -71,14 +102,13 @@ function compute_view_factors(mesh               ::MeshData;
                                n_samples         ::Int          = 10000,
                                rng               ::AbstractRNG  = Random.default_rng(),
                                use_duffy         ::Bool         = false,
+                               factor            ::Float64      = 3.0,
                                verbose           ::Bool         = true)::ViewFactorResult
 
     backend isa Type && (backend = backend())
 
-    use_duffy && !(backend isa CPU) &&
+    use_duffy && !monte_carlo && !(backend isa CPU) &&
         @warn "use_duffy is CPU-only; ignored for GPU backends."
-    use_duffy && monte_carlo &&
-        error("use_duffy and monte_carlo cannot both be true.")
 
     if !(backend isa CPU)
         if mesh.mesh_dim == 1
@@ -89,40 +119,38 @@ function compute_view_factors(mesh               ::MeshData;
         FloatT = _gpu_float_type(backend)
         return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                                   obstruction_groups, verbose,
-                                  monte_carlo, n_samples)
+                                  monte_carlo, n_samples, factor)
     end
 
     return _compute_cpu(mesh, nquad, obstruction_groups, self_vf, verbose,
-                         mesh.mesh_dim, monte_carlo, n_samples, rng, use_duffy)
+                         mesh.mesh_dim, monte_carlo, n_samples, rng, use_duffy,
+                         factor)
 end
 
-# ---------------------------------------------------------------------------
-# CPU path
-# ---------------------------------------------------------------------------
+"""
+    build_bvh_lookup(mesh, obstruction_groups) -> (group_i, group_j) -> Union{BVHTree,Nothing}
 
-function _compute_cpu(mesh              ::MeshData,
-                       nquad            ::Int,
-                       obstruction_groups::Vector{Int},
-                       self_vf          ::Bool,
-                       verbose          ::Bool,
-                       mesh_dim         ::Int         = 2,
-                       monte_carlo      ::Bool        = false,
-                       n_samples        ::Int         = 10000,
-                       rng              ::AbstractRNG = Random.default_rng(),
-                       use_duffy        ::Bool        = false)::ViewFactorResult
-
-    elems  = mesh.surface_elems
-    coords = mesh.coords
-    N      = length(elems)
-
+Return a memoized closure mapping a pair of *radiating*-element group tags to
+the merged obstruction `BVHTree` built from every `obstruction_groups` entry
+other than `group_i`/`group_j`, or `nothing` when no obstruction geometry
+applies. Shared by the CPU and GPU assembly paths (including the near-pair
+Duffy patch) so obstruction is checked consistently everywhere a pair of
+elements is evaluated.
+"""
+function build_bvh_lookup(mesh::MeshData, obstruction_groups::Vector{Int})
     check_obs = !isempty(obstruction_groups)
-
     bvh_cache = Dict{Vector{Int}, Union{BVHTree,Nothing}}()
+    # The assembly loop is threaded and a Julia Dict is not thread-safe: two
+    # threads inserting distinct keys can rehash concurrently and corrupt it.
+    # Distinct keys are numerous (one per pair of radiating groups), so this is
+    # reached often; guard it the same way Quadrature memoises its rules.
+    cache_lock = ReentrantLock()
 
-    function get_bvh(group_i::Int, group_j::Int)::Union{BVHTree,Nothing}
+    return function get_bvh(group_i::Int, group_j::Int)::Union{BVHTree,Nothing}
         check_obs || return nothing
         active = sort(filter(g -> g != group_i && g != group_j, obstruction_groups))
         isempty(active) && return nothing
+        lock(cache_lock) do
         get!(bvh_cache, active) do
             soups = [mesh.group_tri_soup[g]
                      for g in active if haskey(mesh.group_tri_soup, g)]
@@ -141,7 +169,32 @@ function _compute_cpu(mesh              ::MeshData,
             end
             build_bvh(merged)
         end
+        end
     end
+end
+
+# ---------------------------------------------------------------------------
+# CPU path
+# ---------------------------------------------------------------------------
+
+function _compute_cpu(mesh              ::MeshData,
+                       nquad            ::Int,
+                       obstruction_groups::Vector{Int},
+                       self_vf          ::Bool,
+                       verbose          ::Bool,
+                       mesh_dim         ::Int         = 2,
+                       monte_carlo      ::Bool        = false,
+                       n_samples        ::Int         = 10000,
+                       rng              ::AbstractRNG = Random.default_rng(),
+                       use_duffy        ::Bool        = false,
+                       factor           ::Float64     = 3.0)::ViewFactorResult
+
+    elems  = mesh.surface_elems
+    coords = mesh.coords
+    N      = length(elems)
+
+    check_obs = !isempty(obstruction_groups)
+    get_bvh   = build_bvh_lookup(mesh, obstruction_groups)
 
     if verbose
         if monte_carlo
@@ -184,12 +237,20 @@ function _compute_cpu(mesh              ::MeshData,
                 sj = j == i ?
                      sample_element_mc(coords, elems[i], n_samples, row_rngs[i]) :
                      samples[j]
-                integ, _ = element_pair_view_factor_mc(si, sj, bvh, mesh_dim)
+                integ, _ = element_pair_view_factor_mc(si, sj, bvh, mesh_dim,
+                                                        row_rngs[i])
                 raw_integral[i, j] = integ
                 raw_integral[j, i] = integ
             end
             verbose && i % max(1, N÷10) == 0 && println("  … row $i / $N done")
         end
+        # The 1/r² kernel has unbounded variance for vertex/edge-adjacent
+        # pairs — no amount of sampling fixes this. Patch those O(N) pairs
+        # with the deterministic Duffy transform (see DuffyKernel.jl).
+        verbose && print("  Patching adjacent-pair singularities (Duffy)… ")
+        patch_adjacent_pairs_duffy!(raw_integral, coords, elems, nquad, mesh_dim,
+                                     get_bvh; factor=factor)
+        verbose && println("done.")
     else
         # Pre-evaluate each element's quadrature points once (O(N)) instead of
         # re-deriving them for every pair inside the O(N²) loop below.
@@ -251,14 +312,16 @@ _gpu_float_type(backend) =
 const _GPU_HOOK_REF = Ref{Any}(nothing)
 
 function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
-                            obstruction_groups, verbose, monte_carlo, n_samples)
+                            obstruction_groups, verbose, monte_carlo, n_samples,
+                            factor)
     _GPU_HOOK_REF[] === nothing &&
         error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
     return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
                              obstruction_groups=obstruction_groups,
                              verbose=verbose,
                              monte_carlo=monte_carlo,
-                             n_samples=n_samples)
+                             n_samples=n_samples,
+                             factor=factor)
 end
 
 """

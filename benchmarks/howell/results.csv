@@ -1,0 +1,231 @@
+case,title,parameters,kernel,n_elements,F_rvf,F_catalog,rel_error
+C-1,"Infinite parallel plates, equal width","w=1, h=0.25",quad,120,0.78077641,0.78077641,2.844e-16
+C-1,"Infinite parallel plates, equal width","w=1, h=0.25",mc,120,0.78077402,0.78077641,3.060e-06
+C-1,"Infinite parallel plates, equal width","w=1, h=0.5",quad,120,0.61803399,0.61803399,0.000e+00
+C-1,"Infinite parallel plates, equal width","w=1, h=0.5",mc,120,0.61803389,0.61803399,1.589e-07
+C-1,"Infinite parallel plates, equal width","w=1, h=1.0",quad,120,0.41421356,0.41421356,5.361e-16
+C-1,"Infinite parallel plates, equal width","w=1, h=1.0",mc,120,0.41421368,0.41421356,2.758e-07
+C-1,"Infinite parallel plates, equal width","w=1, h=2.0",quad,120,0.23606798,0.23606798,1.176e-16
+C-1,"Infinite parallel plates, equal width","w=1, h=2.0",mc,120,0.23606809,0.23606798,4.611e-07
+C-2,"Infinite parallel plates, unequal width","a=1, b=0.5, c=1.0",quad,120,0.43844719,0.43844719,5.064e-16
+C-2,"Infinite parallel plates, unequal width","a=1, b=0.5, c=1.0",mc,120,0.43844726,0.43844719,1.595e-07
+C-2,"Infinite parallel plates, unequal width","a=1, b=1.0, c=2.0",quad,120,0.68474165,0.68474165,4.864e-16
+C-2,"Infinite parallel plates, unequal width","a=1, b=1.0, c=2.0",mc,120,0.68474085,0.68474165,1.170e-06
+C-2,"Infinite parallel plates, unequal width","a=1, b=2.0, c=0.5",quad,120,0.17539053,0.17539053,7.913e-16
+C-2,"Infinite parallel plates, unequal width","a=1, b=2.0, c=0.5",mc,120,0.17539025,0.17539053,1.590e-06
+C-3,"Infinite perpendicular plates, common edge","w=1, h=0.3",quad,120,0.12797445,0.12798467,7.992e-05
+C-3,"Infinite perpendicular plates, common edge","w=1, h=0.3",mc,120,0.12794279,0.12798467,3.273e-04
+C-3,"Infinite perpendicular plates, common edge","w=1, h=0.6",quad,120,0.21695967,0.21690481,2.529e-04
+C-3,"Infinite perpendicular plates, common edge","w=1, h=0.6",mc,120,0.21697976,0.21690481,3.456e-04
+C-3,"Infinite perpendicular plates, common edge","w=1, h=1.0",quad,120,0.29304292,0.29289322,5.111e-04
+C-3,"Infinite perpendicular plates, common edge","w=1, h=1.0",mc,120,0.29295098,0.29289322,1.972e-04
+C-3,"Infinite perpendicular plates, common edge","w=1, h=2.0",quad,120,0.38200882,0.38196601,1.121e-04
+C-3,"Infinite perpendicular plates, common edge","w=1, h=2.0",mc,120,0.38260963,0.38196601,1.685e-03
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=0.524",quad,120,0.74402761,0.74118095,3.841e-03
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=0.524",mc,120,0.74090921,0.74118095,3.666e-04
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=1.047",quad,120,0.50053296,0.50000000,1.066e-03
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=1.047",mc,120,0.50026927,0.50000000,5.385e-04
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=1.571",quad,120,0.29304292,0.29289322,5.111e-04
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=1.571",mc,120,0.29281389,0.29289322,2.709e-04
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=2.094",quad,120,0.13402012,0.13397460,3.398e-04
+C-4,"Infinite equal plates, common edge, angle α","w=1, α=2.094",mc,120,0.13398936,0.13397460,1.102e-04
+C-11,"Identical parallel directly opposed rectangles","a=1.0, b=1.0, c=1.0",quad,288,0.19982490,0.19982490,2.778e-15
+C-11,"Identical parallel directly opposed rectangles","a=1.0, b=1.0, c=1.0",mc,288,0.19982536,0.19982490,2.345e-06
+C-11,"Identical parallel directly opposed rectangles","a=2.0, b=1.0, c=1.0",quad,288,0.28587538,0.28587538,3.884e-15
+C-11,"Identical parallel directly opposed rectangles","a=2.0, b=1.0, c=1.0",mc,288,0.28587672,0.28587538,4.686e-06
+C-11,"Identical parallel directly opposed rectangles","a=1.0, b=1.0, c=0.5",quad,288,0.41525328,0.41525328,2.674e-15
+C-11,"Identical parallel directly opposed rectangles","a=1.0, b=1.0, c=0.5",mc,288,0.41525747,0.41525328,1.009e-05
+C-11,"Identical parallel directly opposed rectangles","a=2.0, b=4.0, c=1.0",quad,288,0.50898867,0.50898867,3.708e-15
+C-11,"Identical parallel directly opposed rectangles","a=2.0, b=4.0, c=1.0",mc,288,0.50898476,0.50898867,7.682e-06
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=1.0, h=1.0",quad,288,0.20008914,0.20004378,2.267e-04
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=1.0, h=1.0",mc,288,0.20009392,0.20004378,2.507e-04
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=2.0, h=1.0",quad,288,0.11643823,0.11642630,1.025e-04
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=2.0, h=1.0",mc,288,0.11643494,0.11642630,7.416e-05
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=1.0, h=0.5",quad,288,0.14620374,0.14618668,1.167e-04
+C-14,"Perpendicular rectangles with common edge","l=1.0, w=1.0, h=0.5",mc,288,0.14620309,0.14618668,1.123e-04
+C-14,"Perpendicular rectangles with common edge","l=2.0, w=1.0, h=1.0",quad,288,0.24064812,0.24063601,5.033e-05
+C-14,"Perpendicular rectangles with common edge","l=2.0, w=1.0, h=1.0",mc,288,0.24065123,0.24063601,6.325e-05
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=0.5",quad,486,0.38196594,0.38196601,1.985e-07
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=0.5",mc,486,0.38197209,0.38196601,1.591e-05
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=1.0",quad,486,0.17157282,0.17157288,3.139e-07
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=1.0",mc,486,0.17157377,0.17157288,5.218e-06
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=2.0",quad,486,0.05572807,0.05572809,3.970e-07
+C-40,"Coaxial parallel disks, equal radius","r=0.5, a=2.0",mc,486,0.05572696,0.05572809,2.031e-05
+C-41,"Coaxial parallel disks, unequal radius","r1=0.5, r2=0.75, a=1.5",quad,782,0.18651323,0.18651324,5.000e-08
+C-41,"Coaxial parallel disks, unequal radius","r1=0.5, r2=0.75, a=1.5",mc,782,0.18651280,0.18651324,2.348e-06
+C-41,"Coaxial parallel disks, unequal radius","r1=0.5, r2=1.0, a=1.0",quad,1179,0.46887113,0.46887113,1.239e-08
+C-41,"Coaxial parallel disks, unequal radius","r1=0.5, r2=1.0, a=1.0",mc,1179,0.46887377,0.46887113,5.641e-06
+C-41,"Coaxial parallel disks, unequal radius","r1=1.0, r2=0.5, a=1.0",quad,1179,0.11721773,0.11721778,4.015e-07
+C-41,"Coaxial parallel disks, unequal radius","r1=1.0, r2=0.5, a=1.0",mc,1179,0.11721784,0.11721778,5.149e-07
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=0.5",quad,718,0.61816161,0.61803399,2.065e-04
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=0.5",mc,718,0.61817193,0.61803399,2.232e-04
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=1.0",quad,1169,0.82854883,0.82842712,1.469e-04
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=1.0",mc,1169,0.82855407,0.82842712,1.532e-04
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=2.0",quad,2095,0.94440839,0.94427191,1.445e-04
+C-79,"Cylinder base to inside lateral surface","r=0.5, h=2.0",mc,2095,0.94440981,0.94427191,1.460e-04
+C-109,"Cone interior to base","r=0.5, h=0.5",quad,1459,0.70856176,0.70710678,2.058e-03
+C-109,"Cone interior to base","r=0.5, h=0.5",mc,1459,0.70855750,0.70710678,2.052e-03
+C-109,"Cone interior to base","r=0.5, h=1.0",quad,2127,0.44819061,0.44721360,2.185e-03
+C-109,"Cone interior to base","r=0.5, h=1.0",mc,2127,0.44818902,0.44721360,2.181e-03
+C-109,"Cone interior to base","r=0.5, h=2.0",quad,3038,0.24282964,0.24253563,1.212e-03
+C-109,"Cone interior to base","r=0.5, h=2.0",mc,3038,0.24282934,0.24253563,1.211e-03
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=0.75",quad,634,0.44435018,0.44444444,2.121e-04
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=0.75",mc,634,0.44435028,0.44444444,2.119e-04
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=1.0",quad,996,0.24993681,0.25000000,2.527e-04
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=1.0",mc,996,0.24993700,0.25000000,2.520e-04
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=2.0",quad,3252,0.06248324,0.06250000,2.682e-04
+C-135,"Concentric spheres (outer→inner)","r1=0.5, r2=2.0",mc,3252,0.06248316,0.06250000,2.694e-04
+C-125,"Sphere to coaxial disk","rs=0.3, r=0.25, a=1",quad,344,0.01492804,0.01492875,4.765e-05
+C-125,"Sphere to coaxial disk","rs=0.3, r=0.25, a=1",mc,344,0.01492811,0.01492875,4.288e-05
+C-125,"Sphere to coaxial disk","rs=0.3, r=0.5, a=1",quad,349,0.05278735,0.05278640,1.789e-05
+C-125,"Sphere to coaxial disk","rs=0.3, r=0.5, a=1",mc,349,0.05278770,0.05278640,2.458e-05
+C-125,"Sphere to coaxial disk","rs=0.3, r=1.0, a=1",quad,733,0.14644904,0.14644661,1.660e-05
+C-125,"Sphere to coaxial disk","rs=0.3, r=1.0, a=1",mc,733,0.14645662,0.14644661,6.838e-05
+C-125,"Sphere to coaxial disk","rs=0.3, r=2.0, a=1",quad,2263,0.27639625,0.27639320,1.103e-05
+C-125,"Sphere to coaxial disk","rs=0.3, r=2.0, a=1",mc,2263,0.27639015,0.27639320,1.105e-05
+C-34,"Parallel regular polygons (n=3)","n=3, L=0.4",quad,155,0.02095514,0.02095300,1.020e-04
+C-34,"Parallel regular polygons (n=3)","n=3, L=0.4",mc,155,0.02095503,0.02095300,9.706e-05
+C-34,"Parallel regular polygons (n=4)","n=4, L=0.4",quad,335,0.04613742,0.04613700,9.033e-06
+C-34,"Parallel regular polygons (n=4)","n=4, L=0.4",mc,335,0.04613707,0.04613700,1.491e-06
+C-34,"Parallel regular polygons (n=5)","n=5, L=0.4",quad,591,0.07481174,0.07481200,3.447e-06
+C-34,"Parallel regular polygons (n=5)","n=5, L=0.4",mc,591,0.07481031,0.07481200,2.262e-05
+C-34,"Parallel regular polygons (n=6)","n=6, L=0.4",quad,844,0.10566010,0.10566100,8.522e-06
+C-34,"Parallel regular polygons (n=6)","n=6, L=0.4",mc,844,0.10566174,0.10566100,7.023e-06
+C-34,"Parallel regular polygons (n=8)","n=8, L=0.4",quad,1605,0.16948085,0.16951600,2.074e-04
+C-34,"Parallel regular polygons (n=8)","n=8, L=0.4",mc,1605,0.16948105,0.16951600,2.062e-04
+C-34,"Parallel regular polygons (n=3)","n=3, L=1.0",quad,153,0.10560583,0.10560400,1.732e-05
+C-34,"Parallel regular polygons (n=3)","n=3, L=1.0",mc,153,0.10560568,0.10560400,1.587e-05
+C-34,"Parallel regular polygons (n=4)","n=4, L=1.0",quad,337,0.19982490,0.19982500,5.220e-07
+C-34,"Parallel regular polygons (n=4)","n=4, L=1.0",mc,337,0.19982505,0.19982500,2.279e-07
+C-34,"Parallel regular polygons (n=5)","n=5, L=1.0",quad,591,0.28046343,0.28046500,5.610e-06
+C-34,"Parallel regular polygons (n=5)","n=5, L=1.0",mc,591,0.28046233,0.28046500,9.514e-06
+C-34,"Parallel regular polygons (n=6)","n=6, L=1.0",quad,848,0.34857588,0.34684900,4.979e-03
+C-34,"Parallel regular polygons (n=6)","n=6, L=1.0",mc,848,0.34858429,0.34684900,5.003e-03
+C-34,"Parallel regular polygons (n=8)","n=8, L=1.0",quad,1595,0.45501308,0.45502400,2.399e-05
+C-34,"Parallel regular polygons (n=8)","n=8, L=1.0",mc,1595,0.45501583,0.45502400,1.796e-05
+C-34,"Parallel regular polygons (n=3)","n=3, L=2.0",quad,153,0.26656122,0.26656000,4.569e-06
+C-34,"Parallel regular polygons (n=3)","n=3, L=2.0",mc,153,0.26654344,0.26656000,6.213e-05
+C-34,"Parallel regular polygons (n=4)","n=4, L=2.0",quad,337,0.41525328,0.41525300,6.829e-07
+C-34,"Parallel regular polygons (n=4)","n=4, L=2.0",mc,337,0.41525007,0.41525300,7.068e-06
+C-34,"Parallel regular polygons (n=5)","n=5, L=2.0",quad,591,0.51075155,0.51075100,1.080e-06
+C-34,"Parallel regular polygons (n=5)","n=5, L=2.0",mc,591,0.51074819,0.51075100,5.505e-06
+C-34,"Parallel regular polygons (n=6)","n=6, L=2.0",quad,848,0.57837326,0.57837200,2.183e-06
+C-34,"Parallel regular polygons (n=6)","n=6, L=2.0",mc,848,0.57837841,0.57837200,1.109e-05
+C-34,"Parallel regular polygons (n=8)","n=8, L=2.0",quad,1595,0.66879943,0.66880200,3.850e-06
+C-34,"Parallel regular polygons (n=8)","n=8, L=2.0",mc,1595,0.66878771,0.66880200,2.136e-05
+C-137,"Two spheres of unequal radius","R=0.4, S=0.2",quad,2010,0.11324929,0.11400000,6.585e-03
+C-137,"Two spheres of unequal radius","R=0.4, S=0.2",mc,2010,0.11324873,0.11400000,6.590e-03
+C-137,"Two spheres of unequal radius","R=0.4, S=1.0",quad,2010,0.04588070,0.04590000,4.205e-04
+C-137,"Two spheres of unequal radius","R=0.4, S=1.0",mc,2010,0.04588036,0.04590000,4.279e-04
+C-137,"Two spheres of unequal radius","R=1.0, S=0.2",quad,570,0.05931388,0.05950000,3.128e-03
+C-137,"Two spheres of unequal radius","R=1.0, S=0.2",mc,570,0.05931435,0.05950000,3.120e-03
+C-137,"Two spheres of unequal radius","R=1.0, S=1.0",quad,570,0.02958703,0.02940000,6.362e-03
+C-137,"Two spheres of unequal radius","R=1.0, S=1.0",mc,570,0.02958550,0.02940000,6.310e-03
+C-137,"Two spheres of unequal radius","R=3.0, S=0.2",quad,2786,0.01736436,0.01740000,2.048e-03
+C-137,"Two spheres of unequal radius","R=3.0, S=0.2",mc,2786,0.01736390,0.01740000,2.075e-03
+C-137,"Two spheres of unequal radius","R=3.0, S=1.0",quad,2786,0.01131647,0.01130000,1.458e-03
+C-137,"Two spheres of unequal radius","R=3.0, S=1.0",mc,2786,0.01131679,0.01130000,1.486e-03
+C-72,"Cylinder in square array (nearest neighbour)","P=1.2",quad,1200,0.14274106,0.14274000,7.458e-06
+C-72,"Cylinder in square array (nearest neighbour)","P=1.2",mc,1200,0.14273439,0.14274000,3.932e-05
+C-72,"Cylinder in square array (diagonal neighbour)","P=1.2",quad,1200,0.08761864,0.08760000,2.128e-04
+C-72,"Cylinder in square array (diagonal neighbour)","P=1.2",mc,1200,0.08765251,0.08760000,5.994e-04
+C-72,"Cylinder in square array (nearest neighbour)","P=1.5",quad,1200,0.11069589,0.11070000,3.717e-05
+C-72,"Cylinder in square array (nearest neighbour)","P=1.5",mc,1200,0.11069142,0.11070000,7.747e-05
+C-72,"Cylinder in square array (diagonal neighbour)","P=1.5",quad,1200,0.07651891,0.07652000,1.428e-05
+C-72,"Cylinder in square array (diagonal neighbour)","P=1.5",mc,1200,0.07651739,0.07652000,3.414e-05
+C-72,"Cylinder in square array (nearest neighbour)","P=2.0",quad,1200,0.08137573,0.08138000,5.251e-05
+C-72,"Cylinder in square array (nearest neighbour)","P=2.0",mc,1200,0.08137839,0.08138000,1.981e-05
+C-72,"Cylinder in square array (diagonal neighbour)","P=2.0",quad,1200,0.05687921,0.05688000,1.388e-05
+C-72,"Cylinder in square array (diagonal neighbour)","P=2.0",mc,1200,0.05687611,0.05688000,6.831e-05
+C-73,"Cylinder in triangular array (nearest neighbour)","P=1.2",quad,1200,0.14274106,0.14274000,7.458e-06
+C-73,"Cylinder in triangular array (nearest neighbour)","P=1.2",mc,1200,0.14275787,0.14274000,1.252e-04
+C-73,"Cylinder in triangular array (next neighbour)","P=1.2",quad,1200,0.02393989,0.02367000,1.140e-02
+C-73,"Cylinder in triangular array (next neighbour)","P=1.2",mc,1200,0.02376674,0.02367000,4.087e-03
+C-73,"Cylinder in triangular array (nearest neighbour)","P=1.5",quad,1200,0.11069589,0.11070000,3.717e-05
+C-73,"Cylinder in triangular array (nearest neighbour)","P=1.5",mc,1200,0.11067990,0.11070000,1.816e-04
+C-73,"Cylinder in triangular array (next neighbour)","P=1.5",quad,1200,0.04615750,0.04606000,2.117e-03
+C-73,"Cylinder in triangular array (next neighbour)","P=1.5",mc,1200,0.04610819,0.04606000,1.046e-03
+C-73,"Cylinder in triangular array (nearest neighbour)","P=2.0",quad,1200,0.08137573,0.08138000,5.251e-05
+C-73,"Cylinder in triangular array (nearest neighbour)","P=2.0",mc,1200,0.08137852,0.08138000,1.822e-05
+C-73,"Cylinder in triangular array (next neighbour)","P=2.0",quad,1200,0.04627141,0.04627000,3.038e-05
+C-73,"Cylinder in triangular array (next neighbour)","P=2.0",mc,1200,0.04627093,0.04627000,2.012e-05
+C-8,"Infinite plane to front row of tubes","R=2.0",quad,1002,0.65736920,0.65760000,3.510e-04
+C-8,"Infinite plane to front row of tubes","R=2.0",mc,1002,0.65735949,0.65760000,3.657e-04
+C-8,"Infinite plane to front row of tubes","R=3.0",quad,1178,0.46668469,0.46750000,1.744e-03
+C-8,"Infinite plane to front row of tubes","R=3.0",mc,1178,0.46669384,0.46750000,1.724e-03
+C-8,"Infinite plane to front row of tubes","R=5.0",quad,1560,0.29367777,0.29410000,1.436e-03
+C-8,"Infinite plane to front row of tubes","R=5.0",mc,1560,0.29369674,0.29410000,1.371e-03
+C-8,"Infinite plane to second row of tubes","R=2.0",quad,1002,0.20259537,0.19530000,3.735e-02
+C-8,"Infinite plane to second row of tubes","R=2.0",mc,1002,0.20275713,0.19530000,3.818e-02
+C-8,"Infinite plane to second row of tubes","R=3.0",quad,1178,0.21797766,0.21490000,1.432e-02
+C-8,"Infinite plane to second row of tubes","R=3.0",mc,1178,0.21819957,0.21490000,1.535e-02
+C-8,"Infinite plane to second row of tubes","R=5.0",quad,1560,0.18346327,0.18240000,5.829e-03
+C-8,"Infinite plane to second row of tubes","R=5.0",mc,1560,0.18345083,0.18240000,5.761e-03
+C-10,"Rectangle to semi-infinite rectangle at angle","A=0.4, φ=45.0°",quad,9216,0.72966645,0.70629500,3.309e-02
+C-10,"Rectangle to semi-infinite rectangle at angle","A=0.4, φ=45.0°",mc,9216,0.72966468,0.70629500,3.309e-02
+C-10,"Rectangle to semi-infinite rectangle at angle","A=0.4, φ=120.0°",quad,9216,0.16028407,0.15827000,1.273e-02
+C-10,"Rectangle to semi-infinite rectangle at angle","A=0.4, φ=120.0°",mc,9216,0.16028380,0.15827000,1.272e-02
+C-10,"Rectangle to semi-infinite rectangle at angle","A=1.0, φ=45.0°",quad,7936,0.58039694,0.57395100,1.123e-02
+C-10,"Rectangle to semi-infinite rectangle at angle","A=1.0, φ=45.0°",mc,7936,0.58039548,0.57395100,1.123e-02
+C-10,"Rectangle to semi-infinite rectangle at angle","A=1.0, φ=120.0°",quad,7936,0.11050319,0.11004600,4.155e-03
+C-10,"Rectangle to semi-infinite rectangle at angle","A=1.0, φ=120.0°",mc,7936,0.11050343,0.11004600,4.157e-03
+C-10,"Rectangle to semi-infinite rectangle at angle","A=2.0, φ=45.0°",quad,6912,0.44311807,0.44100400,4.794e-03
+C-10,"Rectangle to semi-infinite rectangle at angle","A=2.0, φ=45.0°",mc,6912,0.44311733,0.44100400,4.792e-03
+C-10,"Rectangle to semi-infinite rectangle at angle","A=2.0, φ=120.0°",quad,6912,0.07570215,0.07561200,1.192e-03
+C-10,"Rectangle to semi-infinite rectangle at angle","A=2.0, φ=120.0°",mc,6912,0.07570235,0.07561200,1.195e-03
+C-33,"Hexagonal prism, wall→adjacent wall","L=0.5",quad,973,0.10658591,0.10656000,2.432e-04
+C-33,"Hexagonal prism, wall→adjacent wall","L=0.5",mc,973,0.10658522,0.10656000,2.367e-04
+C-33,"Hexagonal prism, wall→next wall","L=0.5",quad,973,0.13715182,0.13715200,1.331e-06
+C-33,"Hexagonal prism, wall→next wall","L=0.5",mc,973,0.13715298,0.13715200,7.181e-06
+C-33,"Hexagonal prism, wall→opposite wall","L=0.5",quad,973,0.14420145,0.14420100,3.117e-06
+C-33,"Hexagonal prism, wall→opposite wall","L=0.5",mc,973,0.14420121,0.14420100,1.441e-06
+C-33,"Hexagonal prism, end→wall","L=0.5",quad,973,0.14181360,0.14178700,1.876e-04
+C-33,"Hexagonal prism, end→wall","L=0.5",mc,973,0.14181626,0.14178700,2.064e-04
+C-33,"Hexagonal prism, wall→end","L=0.5",quad,973,0.18422126,0.18418700,1.860e-04
+C-33,"Hexagonal prism, wall→end","L=0.5",mc,973,0.18422572,0.18418700,2.102e-04
+C-33,"Hexagonal prism, end→end","L=0.5",quad,973,0.14927499,0.14927700,1.347e-05
+C-33,"Hexagonal prism, end→end","L=0.5",mc,973,0.14927846,0.14927700,9.814e-06
+C-33,"Hexagonal prism, wall→adjacent wall","L=1.0",quad,689,0.08664075,0.08661500,2.973e-04
+C-33,"Hexagonal prism, wall→adjacent wall","L=1.0",mc,689,0.08664110,0.08661500,3.013e-04
+C-33,"Hexagonal prism, wall→next wall","L=1.0",quad,689,0.08751100,0.08676300,8.621e-03
+C-33,"Hexagonal prism, wall→next wall","L=1.0",mc,689,0.08751145,0.08676300,8.626e-03
+C-33,"Hexagonal prism, wall→opposite wall","L=1.0",quad,689,0.08759815,0.08759800,1.721e-06
+C-33,"Hexagonal prism, wall→opposite wall","L=1.0",mc,689,0.08759903,0.08759800,1.176e-05
+C-33,"Hexagonal prism, end→wall","L=1.0",quad,689,0.10860176,0.10835800,2.250e-03
+C-33,"Hexagonal prism, end→wall","L=1.0",mc,689,0.10860142,0.10835800,2.246e-03
+C-33,"Hexagonal prism, wall→end","L=1.0",quad,689,0.28215564,0.28282300,2.360e-03
+C-33,"Hexagonal prism, wall→end","L=1.0",mc,689,0.28216146,0.28282300,2.339e-03
+C-33,"Hexagonal prism, end→end","L=1.0",quad,689,0.34857588,0.34685000,4.976e-03
+C-33,"Hexagonal prism, end→end","L=1.0",mc,689,0.34857934,0.34685000,4.986e-03
+C-33,"Hexagonal prism, wall→adjacent wall","L=2.0",quad,2135,0.06326045,0.06324800,1.968e-04
+C-33,"Hexagonal prism, wall→adjacent wall","L=2.0",mc,2135,0.06325812,0.06324800,1.600e-04
+C-33,"Hexagonal prism, wall→next wall","L=2.0",quad,2135,0.04816676,0.04816600,1.568e-05
+C-33,"Hexagonal prism, wall→next wall","L=2.0",mc,2135,0.04816647,0.04816600,9.780e-06
+C-33,"Hexagonal prism, wall→opposite wall","L=2.0",quad,2135,0.04689190,0.04689200,2.170e-06
+C-33,"Hexagonal prism, wall→opposite wall","L=2.0",mc,2135,0.04689137,0.04689200,1.342e-05
+C-33,"Hexagonal prism, end→wall","L=2.0",quad,2135,0.07028418,0.07027100,1.876e-04
+C-33,"Hexagonal prism, end→wall","L=2.0",mc,2135,0.07028425,0.07027100,1.886e-04
+C-33,"Hexagonal prism, wall→end","L=2.0",quad,2135,0.36520731,0.36514000,1.844e-04
+C-33,"Hexagonal prism, wall→end","L=2.0",mc,2135,0.36520746,0.36514000,1.848e-04
+C-33,"Hexagonal prism, end→end","L=2.0",quad,2135,0.57837326,0.57837200,2.183e-06
+C-33,"Hexagonal prism, end→end","L=2.0",mc,2135,0.57836877,0.57837200,5.591e-06
+C-63,"Concentric infinite cylinders (outer→inner)","r1=0.5, r2=0.75",quad,160,0.66666955,0.66666667,4.325e-06
+C-63,"Concentric infinite cylinders (outer→inner)","r1=0.5, r2=0.75",mc,160,0.66667112,0.66666667,6.673e-06
+C-63,"Concentric infinite cylinders (outer→inner)","r1=0.5, r2=1.0",quad,160,0.50000093,0.50000000,1.852e-06
+C-63,"Concentric infinite cylinders (outer→inner)","r1=0.5, r2=1.0",mc,160,0.49999800,0.50000000,3.991e-06
+C-63,"Concentric infinite cylinders (outer→inner)","r1=0.5, r2=2.0",quad,160,0.24999732,0.25000000,1.071e-05
+C-63,"Concentric infinite cylinders (outer→inner)","r1=0.5, r2=2.0",mc,160,0.25000285,0.25000000,1.141e-05
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=0.5",quad,144,0.11069584,0.11069597,1.163e-06
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=0.5",mc,144,0.11068817,0.11069597,7.042e-05
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=1.0",quad,144,0.08137579,0.08137579,5.513e-08
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=1.0",mc,144,0.08137584,0.08137579,5.925e-07
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=2.0",quad,144,0.05356008,0.05356011,3.898e-07
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=2.0",mc,144,0.05356095,0.05356011,1.568e-05
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=4.0",quad,144,0.03193840,0.03193839,4.720e-07
+C-68,"Infinite parallel cylinders, equal diameter","r=0.5, s=4.0",mc,144,0.03193806,0.03193839,1.034e-05
+C-69,"Infinite parallel cylinders, unequal radius","r1=0.5, r2=0.75, s=1.0",quad,144,0.10924846,0.10924847,4.567e-08
+C-69,"Infinite parallel cylinders, unequal radius","r1=0.5, r2=0.75, s=1.0",mc,144,0.10924846,0.10924847,3.734e-08
+C-69,"Infinite parallel cylinders, unequal radius","r1=0.5, r2=1.5, s=0.5",quad,144,0.20746967,0.20746985,8.474e-07
+C-69,"Infinite parallel cylinders, unequal radius","r1=0.5, r2=1.5, s=0.5",mc,144,0.20748008,0.20746985,4.932e-05
+C-69,"Infinite parallel cylinders, unequal radius","r1=1.0, r2=0.25, s=2.0",quad,144,0.02491734,0.02491731,9.270e-07
+C-69,"Infinite parallel cylinders, unequal radius","r1=1.0, r2=0.25, s=2.0",mc,144,0.02491732,0.02491731,1.869e-07

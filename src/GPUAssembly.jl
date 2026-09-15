@@ -14,7 +14,8 @@ import ..GPUBVH:       build_flat_bvh_from_mesh
 import ..GPUKernels:   build_gpu_arrays, launch_vf_kernel!
 import ..GPUMCKernels: launch_mc_kernel!
 import ..Results:      ViewFactorResult, _aggregate
-import ..Assembly:     register_gpu_hook!
+import ..Assembly:     register_gpu_hook!, build_bvh_lookup
+import ..DuffyKernel:  patch_adjacent_pairs_duffy!
 
 export compute_view_factors_gpu
 
@@ -28,6 +29,9 @@ GPU implementation of compute_view_factors.
 `FloatT`             — element type: `Float64` for CUDA, `Float32` for Metal.
 `ArrayT`             — device array constructor, provided by the backend extension.
 `obstruction_groups` — physical group tags whose geometry occludes rays.
+`factor`             — near-pair Duffy-patch radius, in element diameters
+                        (see `near_pairs` in `DuffyKernel.jl`); only used
+                        when `monte_carlo=true`.
 """
 function compute_view_factors_gpu(mesh               ::MeshData,
                                    nquad             ::Int,
@@ -37,7 +41,8 @@ function compute_view_factors_gpu(mesh               ::MeshData,
                                    obstruction_groups::Vector{Int} = Int[],
                                    verbose           ::Bool        = true,
                                    monte_carlo       ::Bool        = false,
-                                   n_samples         ::Int         = 10000)::ViewFactorResult
+                                   n_samples         ::Int         = 10000,
+                                   factor            ::Float64     = 3.0)::ViewFactorResult
     N = length(mesh.surface_elems)
     if verbose
         if monte_carlo
@@ -67,25 +72,54 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     end
 
     # Launch kernels
-    verbose && print("  Running GPU kernel… ")
+    verbose && println("  Running GPU kernel…")
     if monte_carlo
         seed = rand(UInt64)
         raw_dev, area_dev = launch_mc_kernel!(ga, backend;
                                                n_samples=n_samples,
                                                seed=seed,
-                                               flat_bvh=flat_bvh)
+                                               flat_bvh=flat_bvh,
+                                               verbose=verbose)
     else
         raw_dev, area_dev = launch_vf_kernel!(ga, backend; flat_bvh=flat_bvh)
     end
-    verbose && println("done.")
+    verbose && println("  …kernel done.")
 
     # Copy results back to CPU
     raw_cpu  = Array(raw_dev)
     area_cpu = Array(area_dev)
 
+    # Every element must have a positive area estimate.  A zero means the
+    # kernel never ran for that element: on Metal, macOS's GPU watchdog kills
+    # long-running command buffers ("Failed to submit command buffer:
+    # Impacting Interactivity"), and that error is only logged asynchronously
+    # — execution continues with partially-written buffers, which would turn
+    # into a silently NaN-filled view factor matrix below (0/0 in the row
+    # normalisation).  Fail loudly instead.
+    nzero = count(iszero, area_cpu)
+    if nzero > 0
+        error("GPU kernel returned a zero area for $nzero of $N elements — " *
+              "the kernel did not run to completion (on Metal, check the log " *
+              "for an asynchronous \"Impacting Interactivity\" command-buffer " *
+              "error from the macOS GPU watchdog), or the mesh contains " *
+              "degenerate elements.")
+    end
+
     # Promote to Float64 for all post-processing (aggregation, reciprocity checks)
     raw_f64  = Float64.(raw_cpu)
     area_f64 = Float64.(area_cpu)
+
+    # The 1/r² kernel has unbounded variance for vertex/edge-adjacent
+    # pairs — sampling more doesn't fix this, on GPU any more than on CPU.
+    # Patch those O(N) pairs on the CPU with the deterministic Duffy
+    # transform, on top of whatever ran on the GPU for the O(N²) bulk.
+    if monte_carlo
+        verbose && print("  Patching adjacent-pair singularities (Duffy, CPU)… ")
+        get_bvh = build_bvh_lookup(mesh, obstruction_groups)
+        patch_adjacent_pairs_duffy!(raw_f64, mesh.coords, mesh.surface_elems,
+                                     nquad, mesh.mesh_dim, get_bvh; factor=factor)
+        verbose && println("done.")
+    end
 
     # Divide each row i by A[i] to get F_elem
     F_elem = raw_f64 ./ reshape(area_f64, N, 1)
