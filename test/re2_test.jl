@@ -5,12 +5,16 @@
 # boundary-face extraction, BC grouping, and outward normal orientation are all
 # exercised end to end. (Validation against a real Nek .re2 file is separate.)
 
-# Write one unit hex [0,1]³ to `path`. `codes` is a vector of (iside, label)
-# boundary records. `swap` emits big-/foreign-endian; `wd` is the real word size.
+# Write one hex (the unit cube [0,1]³ unless `corners` says otherwise) to
+# `path`. `codes` is a vector of (iside, label) boundary records; `curves` is a
+# vector of (edge, point) mid-side-node ('m') curved-side records. `swap` emits
+# big-/foreign-endian; `wd` is the real word size.
 function _write_re2(path::AbstractString, codes::Vector{Tuple{Int,String}};
-                    swap::Bool=false, wd::Int=8)
-    corners = [(0.0,0.0,0.0),(1.0,0.0,0.0),(1.0,1.0,0.0),(0.0,1.0,0.0),
-               (0.0,0.0,1.0),(1.0,0.0,1.0),(1.0,1.0,1.0),(0.0,1.0,1.0)]
+                    swap::Bool=false, wd::Int=8,
+                    corners = [(0.0,0.0,0.0),(1.0,0.0,0.0),(1.0,1.0,0.0),(0.0,1.0,0.0),
+                               (0.0,0.0,1.0),(1.0,0.0,1.0),(1.0,1.0,1.0),(0.0,1.0,1.0)],
+                    curves::Vector{Tuple{Int,NTuple{3,Float64}}} =
+                        Tuple{Int,NTuple{3,Float64}}[])
     T  = wd == 8 ? Float64 : Float32
     io = IOBuffer()
     hdr = "#v001" * lpad("1",9) * lpad("3",3) * lpad("1",9)   # nelgt=1 ndim=3 nelgv=1
@@ -23,7 +27,14 @@ function _write_re2(path::AbstractString, codes::Vector{Tuple{Int,String}};
     wf(6.54321, Float32)                        # endian tag (always real*4)
     wf(0.0, T)                                  # igroup
     for d in 1:3, v in 1:8; wf(corners[v][d], T); end   # x8, y8, z8
-    wf(0.0, T)                                  # ncurve = 0
+    wf(Float64(length(curves)), T)              # ncurve
+    for (edge, pt) in curves
+        wf(1.0, T); wf(Float64(edge), T)        # element, edge index
+        wf(pt[1], T); wf(pt[2], T); wf(pt[3], T)   # mid-side point (params 1-3)
+        wf(0.0, T); wf(0.0, T)                  # params 4-5, unused by 'm'
+        cb = zeros(UInt8, 8); cb[1] = UInt8('m')   # char*8 curve-type slot
+        write(io, cb)
+    end
     wf(Float64(length(codes)), T)               # nbc (single BC field)
     for (iside, code) in codes
         wf(1.0, T); wf(Float64(iside), T)       # element, face
@@ -186,6 +197,61 @@ end
         else
             @info "tall_cavity.re2 not present; skipping real-file .re2 test."
         end
+    end
+
+    @testset "curved faces from mid-side ('m') records" begin
+        # One hex whose top face (iside 6, corners 5-8) is a parabolic
+        # cylinder z = c(1 - x²) over x,y ∈ [-1,1]: its corners sit at z=0 and
+        # the two edges running along x bow up to z=c. A Quad8 reproduces that
+        # surface *exactly* (the map is quadratic in ξ), so its area has a
+        # closed form to test against:
+        #     A = ∫∫ sqrt(1 + (2cx)²) dx dy = 2 sqrt(1+a²) + 2 asinh(a)/a,  a=2c
+        c  = 0.3
+        a  = 2c
+        Aexact = 2*sqrt(1 + a^2) + 2*asinh(a)/a
+        corners = [(-1.0,-1.0,-1.0), (1.0,-1.0,-1.0), (1.0,1.0,-1.0), (-1.0,1.0,-1.0),
+                   (-1.0,-1.0, 0.0), (1.0,-1.0, 0.0), (1.0,1.0, 0.0), (-1.0,1.0, 0.0)]
+        # Mid-side points for the top face's two x-running edges, (5,6) and
+        # (7,8). The edge indices written here are deliberately wrong (9 and
+        # 10, two of the vertical edges): the loader matches each record to the
+        # nearest element edge geometrically, because Nek's own edge numbering
+        # is not written consistently by every mesh converter.
+        curves = [(9, (0.0, -1.0, c)), (10, (0.0, 1.0, c))]
+        f = _write_re2(tempname()*".re2", allcodes; corners=corners, curves=curves)
+
+        m = load_re2(f; verbose=false)
+        @test all(e -> e.family === :quad, m.surface_elems)   # all faces promoted
+        @test all(e -> length(e.nodes) == 8, m.surface_elems)
+
+        pts, wts = gauss_legendre_1d(12)
+        area(e) = sum(wts[i]*wts[j] *
+                      quad8_normal_and_area_element(m.coords, e.nodes, pts[i], pts[j])[2]
+                      for i in eachindex(pts), j in eachindex(pts))
+        top = only(filter(e -> e.iface == 6, m.surface_elems))
+        bot = only(filter(e -> e.iface == 5, m.surface_elems))
+        @test isapprox(area(top), Aexact; rtol=1e-8)   # curved: 4.2285, not 4
+        @test isapprox(area(bot), 4.0;    rtol=1e-12)  # flat face unaffected
+        @test area(top) > 4.0
+
+        # The recorded bow really is in the surface, not just in the area.
+        zs = [m.coords[3, n] for n in top.nodes]
+        @test count(z -> isapprox(z, c; atol=1e-12), zs) == 2
+
+        # curved=false restores the old corners-only behaviour exactly.
+        m4 = load_re2(f; curved=false, verbose=false)
+        @test all(e -> e.family === :quad4, m4.surface_elems)
+        top4 = only(filter(e -> e.iface == 6, m4.surface_elems))
+        A4 = sum(wts[i]*wts[j] *
+                 quad4_normal_and_area_element(m4.coords, top4.nodes, pts[i], pts[j])[2]
+                 for i in eachindex(pts), j in eachindex(pts))
+        @test isapprox(A4, 4.0; rtol=1e-12)
+        rm(f)
+
+        # A file with no curved-side records is unchanged by `curved=true`.
+        g  = _write_re2(tempname()*".re2", allcodes)
+        mg = load_re2(g; verbose=false)
+        @test all(e -> e.family === :quad4, mg.surface_elems)
+        rm(g)
     end
 
     @testset "helpful errors" begin

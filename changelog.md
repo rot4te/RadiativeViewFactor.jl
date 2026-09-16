@@ -1,3 +1,71 @@
+# 2026-09-16
+
+## Curved `.re2` faces (`load_re2(...; curved=true)`, default on)
+
+`load_re2` read the curved-side block only to skip past it, so every Nek face
+became the flat quad through its 4 corners. That understates a curved face's
+area — 1.47 % on the `single_pebble_vf` sphere (6x6 per cubed-sphere block) —
+and, more seriously for a solver, makes `F` reciprocal with respect to those
+flat areas while Nek5000/NekRS integrates fluxes over the curved faces. The
+enclosure balance `Σ Aᵢqᵢ = 0` then fails: measured on that case, the pebble
+emitted +1.378 W while the duct walls absorbed -1.566 W, a -0.188 W residual
+= 10 % of the imposed pebble power, which entered the fluid as a spurious
+heat source through the wall flux BC. A 1.5 % geometry error becomes a 10 %
+flux error because the net flux is a small difference of large radiosities
+(`q ≈ 2.5e2` against `J ≈ 5.9e4 W/m²`).
+
+- `src/MeshIO.jl`: `_re2_parse` now returns the mid-side-node (`'m'`)
+  curved-side records, and `_re2_build_mesh` turns every boundary face into a
+  Quad8 when any are present — mid-side nodes from the records, straight
+  mid-points for uncurved edges, so a mesh is all-Quad8 or all-Quad4 and the
+  Duffy near-pair path stays available for every pair. The analytic curve
+  forms (`'C'`, `'s'`) are still ignored; `gmsh2nek` writes `'m'`.
+  Each record is matched to an element edge **geometrically** (nearest
+  straight mid-point, rejected beyond half the edge length) rather than by its
+  written edge index, because Nek's edge numbering is not written consistently
+  by every converter.
+- `load_re2` gained `curved::Bool=true`. Files with no `'m'` records load
+  exactly as before; `curved=false` restores the old corners-only behaviour.
+- Verified on `nekRS/examples/single_pebble_vf/single_pebble.re2`: pebble
+  group area 0.0050258 m² against NekRS's own curved-face integration
+  0.0050258 (flat quads gave 0.0049518, -1.47 %); planar groups unchanged.
+- `test/re2_test.jl`: the synthetic writer emits curved-side records, and a
+  new testset builds a hex whose top face is the parabolic cylinder
+  `z = c(1-x²)` — a surface a Quad8 represents exactly — and checks the loaded
+  face area against the closed form `2√(1+a²) + 2asinh(a)/a`, `a = 2c`. The
+  written edge indices are deliberately wrong, to pin the geometric matching.
+
+## Ray-shooting scene follows curved faces
+
+- `src/RayTraceKernel.jl`: `_triangulate_tagged` subdivides a Quad8 on a
+  `QUAD8_SCENE_SUBDIV`² (3x3) parametric lattice through its isoparametric
+  map instead of emitting 2 corner triangles. Rays leave an element from its
+  exact curved surface, so the scene they land on has to follow the same
+  surface; chord error falls as the square of the cell size, from 1.5 % to
+  about 0.2 % here, for 18 triangles per element.
+
+## `enforce_closure(result, mesh)` (new, exported)
+
+Alternates symmetrising `AᵢFᵢⱼ` with rescaling rows until both reciprocity
+and `Σⱼ Fᵢⱼ = 1` hold to machine precision.
+
+Needed because row-sum error leaks straight into the net flux: `ε` of closure
+error contributes `ε·J`, so the 0.3 % that curved-element quadrature plateaus
+at (`nquad` 8 → 16 barely moved it: 0.0031 → 0.0028) and the 1.4 % that ray
+shooting shows at 2e5 rays/element both swamp a `q` that is 0.4 % of `J`.
+Sampling cannot fix it — closure error falls as `1/√n_rays`, so `1e-5` would
+need about `1e10` rays per element. With exact row sums an isothermal
+enclosure gives `q = 0` identically, which removes that error channel.
+Documented as closed-enclosure only: on a deliberately open result
+(`radiating_groups=...`) rows legitimately sum to less than 1.
+
+Validation on `single_pebble_vf` (NekRS checkpoint t = 4.5 s): curved
+`load_re2` + ray shooting (1e6 rays/element) + `enforce_closure` gives pebble
++275.29 W/m², duct wall -27.02 W/m², enclosure residual 0. An independent
+path — the old flat-quad quadrature file, rebuilt outside the package to be
+reciprocal with NekRS's curved areas — gives +275.30 and -27.02. The
+uncorrected file gave +274.09 and -30.58 (12 % off on the wall).
+
 # 2026-09-15
 
 - `.markdownlint.json` (new): disabled MD013 (line-length) for tables. The
