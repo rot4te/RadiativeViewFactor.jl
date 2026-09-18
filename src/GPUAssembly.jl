@@ -206,16 +206,18 @@ function _compute_gpu_raytrace(mesh, ga, backend, FloatT, ArrayT,
 
     # Reciprocity by construction: average the two independent raw
     # double-integral estimates each unordered pair has (raw = F * A_source),
-    # then store that shared value at both [i,j] and [j,i] — identical to
-    # Assembly._compute_cpu_raytrace.
-    raw_integral = zeros(Float64, N, N)
+    # writing F_{i->j}/F_{j->i} back into F_raw's own storage in place
+    # (rather than through two more N×N arrays) — identical to, and for the
+    # same memory-scaling reason as, Assembly._compute_cpu_raytrace.
     @inbounds for i in 1:N, j in i+1:N
         r = 0.5 * (F_raw[i,j] * area_cpu[i] + F_raw[j,i] * area_cpu[j])
-        raw_integral[i,j] = r
-        raw_integral[j,i] = r
+        F_raw[i,j] = r / area_cpu[i]
+        F_raw[j,i] = r / area_cpu[j]
     end
-
-    F_elem = raw_integral ./ reshape(area_cpu, N, 1)
+    @inbounds for i in 1:N
+        F_raw[i,i] = 0.0   # raytrace never estimates a self view factor
+    end
+    F_elem = F_raw
 
     group_tags, group_names, F_group, A_group = _aggregate(mesh, F_elem, area_cpu)
 
