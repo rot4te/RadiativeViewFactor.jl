@@ -4,10 +4,16 @@
 [![codecov](https://codecov.io/github/rot4te/RadiativeViewFactor.jl/branch/main/graph/badge.svg)](https://app.codecov.io/github/rot4te/RadiativeViewFactor.jl)
 [![Docs (dev)](https://img.shields.io/badge/docs-dev-blue.svg)](https://rot4te.github.io/RadiativeViewFactor.jl/dev/)
 
-A Julia package for computing **radiative view factors** between arbitrary surfaces
-or curves. Meshes may be **structured or unstructured** and **1st- or 2nd-order**;
-any format readable by [Gmsh](https://gmsh.info/) is supported, plus XML VTK
-(`.vtu`) via an optional ReadVTK.jl extension.
+A Julia package for computing radiative view factors between arbitrary
+surfaces (3-D) or curves (2-D) on structured or unstructured meshes of
+first- or second-order triangles, quadrilaterals, and lines, mixable within
+one mesh. Any format readable with [Gmsh](https://gmsh.info/) is supported,
+plus XML VTK (`.vtu`) via an optional ReadVTK.jl extension, and
+Nek5000/NekRS .re2 files. Integration is by Gauss-Legendre quadrature,
+Monte Carlo pair-area sampling, Sauter-Schwab-type Duffy transformation of
+singular element pairs, or ray-shooting Monte Carlo, all with
+BVH-accelerated obstruction. Runs multi-threaded on the CPU and on NVIDIA
+CUDA and Apple Metal GPUs via KernelAbstractions.jl.
 
 ## Quick Start
 

@@ -4,7 +4,7 @@ The following works informed the numerical methods implemented in this package.
 
 ## View factor theory
 
-- Howell, J. R., Mengüç, M. P., & Siegel, R. (2020). *Thermal Radiation Heat Transfer* (7th ed.). CRC Press.
+- Howell, J. R., Mengüç, M. P., Daun, K., & Siegel, R. (2021). *Thermal Radiation Heat Transfer* (7th ed.). CRC Press.
   — View factor definitions, reciprocity relation, crossed-string method for 2D geometries, and analytical reference cases used for validation.
 
 - Howell, J. R. *A Catalog of Radiation Heat Transfer Configuration Factors* (3rd ed.). <https://www.thermalradiation.net>
@@ -24,7 +24,7 @@ The following works informed the numerical methods implemented in this package.
   — Original Duffy transformation. `DuffyKernel.jl` implements an elementary "biggest-coordinate" generalization of this single-simplex transform (4 regions for a common vertex, 6 for a common edge), not the specific Sauter–Schwab region formulas below.
 
 - Sauter, S. A., & Schwab, C. (2011). *Boundary Element Methods*. Springer.
-  — Sauter–Schwab common-vertex (§5.3.2) and common-edge (§5.3.3) decompositions; a related but distinct 4D Duffy-type regularization for the same singularity, kept here as background reading rather than as the implemented method.
+  — Chapter 5: the Sauter–Schwab regularizing coordinate transformations for identical, common-face, common-edge and common-vertex panels; a related but distinct 4D Duffy-type regularization for the same singularity, kept here as background reading rather than as the implemented method.
 
 ## Gaussian quadrature
 
@@ -41,18 +41,18 @@ The following works informed the numerical methods implemented in this package.
 
 ## BVH traversal
 
-- Shirley, P., et al. (2019). *Ray Tracing Gems*. Apress.
-  — Stackless BVH traversal via miss-link (skip-pointer) encoding, implemented in `GPUBVH.jl` to eliminate per-thread stack memory on GPU.
+- Torres, R., Martín, P. J., & Gavilanes, A. (2009). Ray casting using a roped BVH with CUDA. *Proceedings of the 25th Spring Conference on Computer Graphics (SCCG '09)*, 95–102. ACM.
+  — Stackless BVH traversal by storing, with each node, the node to visit next when the ray misses it (a "skip connection" or "escape index"). `GPUBVH.jl` uses this encoding (its `miss_link`) to eliminate per-thread stack memory on GPU.
 
 ## Monte Carlo integration
 
 - Pharr, M., Jakob, W., & Humphreys, G. (2023). *Physically Based Rendering: From Theory to Implementation* (4th ed.). MIT Press.
   — Stratified sampling, variance reduction, and Monte Carlo estimators for light transport integrals; basis for the stratified area-sampling scheme in `MCKernel.jl`.
 
-- Cohen, M. F., & Wallace, J. R. (1995). *Radiosity and Realistic Image Synthesis*. Academic Press.
+- Cohen, M. F., & Wallace, J. R. (1993). *Radiosity and Realistic Image Synthesis*. Academic Press.
   — Source for the solid-angle identity ``dA_j \cos\theta_j / r^2 = d\Omega`` underlying the cosine-weighted ray-shooting estimator in `RayTraceKernel.jl` and `GPURayTraceKernels.jl`.
 
-- Duff, T., Burgess, J., Christensen, P., Hery, C., Kensler, A., Liani, M., & Villemin, R. (2017). Building an orthonormal basis, revisited. *Journal of Computer Graphics Techniques*.
+- Duff, T., Burgess, J., Christensen, P., Hery, C., Kensler, A., Liani, M., & Villemin, R. (2017). Building an orthonormal basis, revisited. *Journal of Computer Graphics Techniques*, 6(1).
   — Branchless orthonormal-basis construction used to turn a surface normal into the frame for cosine-weighted hemisphere sampling in `RayTraceKernel.jl` and `GPURayTraceKernels.jl`.
 
 ## GPU pseudo-random number generation

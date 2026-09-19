@@ -53,12 +53,12 @@ formulas — the latter is included below as related background reading.
 **View factor theory and analytical reference cases**:
 
 ```bibtex
-@book{howell_2020,
-  author    = {Howell, John R. and Meng\"{u}\c{c}, M. Pinar and Siegel, Robert},
+@book{howell_2021,
+  author    = {Howell, John R. and Meng\"{u}\c{c}, M. Pinar and Daun, Kyle and Siegel, Robert},
   title     = {Thermal Radiation Heat Transfer},
   edition   = {7th},
   publisher = {CRC Press},
-  year      = {2020}
+  year      = {2021}
 }
 ```
 

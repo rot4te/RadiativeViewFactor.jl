@@ -13,16 +13,16 @@ repository-code: "https://github.com/rot4te/RadiativeViewFactor.jl"
 url: "https://rot4te.github.io/RadiativeViewFactor.jl"
 abstract: >-
   A Julia package for computing radiative view factors between arbitrary
-  surfaces or curves. Meshes may be structured or unstructured and use
-  first- or second-order elements (triangles, quadrilaterals, and lines,
-  mixable within one mesh); any format readable by Gmsh is supported
-  (including .msh, STL, STEP, Nastran, and MED), along with XML VTK
-  unstructured grids (.vtu) via an optional ReadVTK.jl extension. Supports
-  Gauss-Legendre quadrature, Monte Carlo integration with stratified
-  sampling, and the Sauter-Schwab Duffy transformation for near-singular
-  element pairs. Provides CPU multi-threading and GPU backends (NVIDIA CUDA
-  and Apple Metal) via KernelAbstractions.jl, with BVH-accelerated obstruction
-  detection on all backends.
+  surfaces (3-D) or curves (2-D) on structured or unstructured meshes of
+  first- or second-order triangles, quadrilaterals, and lines, mixable within
+  one mesh. Reads any Gmsh-supported format (including .msh, STL, STEP,
+  Nastran, and MED), XML VTK (.vtu) via an optional ReadVTK.jl extension, and
+  Nek5000/NekRS .re2 files. Integration is by Gauss-Legendre quadrature,
+  Monte Carlo pair-area sampling, Sauter-Schwab-type Duffy transformation of
+  singular element pairs, or ray-shooting Monte Carlo, all with
+  BVH-accelerated obstruction. Runs multi-threaded on the CPU and on NVIDIA
+  CUDA and Apple Metal GPUs via KernelAbstractions.jl, and can export view
+  factors for NekRS radiation cases.
 keywords:
   - julia
   - radiation
@@ -36,8 +36,8 @@ keywords:
   - GPU
   - heat transfer
 license: MIT
-version: "0.6.3"
-date-released: "2026-09-14"
+version: "0.3.5"
+date-released: "2026-09-19"
 references:
   - type: book
     title: "Thermal Radiation Heat Transfer"
@@ -47,9 +47,11 @@ references:
         given-names: John R.
       - family-names: Mengüç
         given-names: M. Pinar
+      - family-names: Daun
+        given-names: Kyle
       - family-names: Siegel
         given-names: Robert
-    year: 2020
+    year: 2021
     publisher:
       name: CRC Press
   - type: book
