@@ -50,14 +50,17 @@ element method (a related but different decomposition of the same
 singularity) — see [Theory](@ref) for the exact construction.
 
 **Constraints:**
-- CPU only (`use_duffy` is ignored on GPU backends with a warning)
+- Also runs on GPU backends for 3-D meshes, as a device kernel over the
+  touching pairs (see [Duffy transformation on GPU](@ref))
 - Quad4–Quad4 and Quad8–Quad8 pairs only; triangle, curve, and mixed
   Quad4/Quad8 pairs always use standard quadrature
 - Has no effect with `monte_carlo=true` (the pair-area Monte Carlo path always
   applies this same Duffy patch to near/touching pairs regardless of
   `use_duffy`) or with `raytrace=true` (which never evaluates `1/r²`)
-- Not applicable for `surface_dim=1` (the 2D `1/r` singularity at shared
-  endpoints is physically divergent and cannot be regularized)
+- Not applicable for `surface_dim=1`: there is no 2-D Duffy transformation,
+  and none is needed for correctness — at a shared endpoint the 2-D kernel
+  stays bounded (the two cosines vanish as the points approach the corner), so
+  plain quadrature converges there, just not as fast as on smooth pairs
 
 **Cost:** `4 × nquad⁴` evaluations per vertex pair, `6 × nquad⁴` per edge pair,
 versus `nquad⁴` for standard quadrature. Since only adjacent pairs trigger the
@@ -86,9 +89,13 @@ are placed on a ⌊√N⌋ × ⌊√N⌋ grid of strata within the reference ele
 O(1/N) variance convergence rather than O(1/√N) for plain Monte Carlo.
 
 Because the `1/r²` kernel's variance diverges for touching or near-touching
-pairs, `compute_view_factors` **always** patches every near/touching pair
-(found via a spatial grid, see `factor`) with the deterministic Duffy value
-after the Monte Carlo bulk finishes — `use_duffy` has no separate effect when
+pairs, `compute_view_factors` **always** patches every near pair (found via a
+spatial grid, see `factor`) with a deterministic value once the Monte Carlo bulk
+has finished: the Duffy integral for Quad4–Quad4 and Quad8–Quad8 pairs that
+touch, plain quadrature for pairs that are merely close (and for triangles and
+mixed families, which have no Duffy formula). On the CPU those pairs are skipped
+in the sampling loop; on a GPU the bulk kernel samples them and a second device
+kernel then overwrites them. `use_duffy` has no separate effect when
 `monte_carlo=true`, since this patch is unconditional.
 
 For efficiency, one independent stratified sample set is drawn **once per

@@ -49,15 +49,18 @@ RadiativeViewFactor.plot_mesh_normals
 ## Element geometry evaluators
 
 Exported helpers that map a reference coordinate to a physical point, unit
-normal, and area (or length) element for a single element.
+normal, and area (or length) element for a single element, and the linear shape
+functions behind them.
 
 ```@docs
 RadiativeViewFactor.quad8_physical_point
 RadiativeViewFactor.quad8_normal_and_area_element
+RadiativeViewFactor.quad4_shape
 RadiativeViewFactor.quad4_physical_point
 RadiativeViewFactor.quad4_normal_and_area_element
 RadiativeViewFactor.line3_physical_point
 RadiativeViewFactor.line3_normal_and_length_element
+RadiativeViewFactor.line2_shape
 RadiativeViewFactor.line2_physical_point
 RadiativeViewFactor.line2_normal_and_length_element
 ```

@@ -35,12 +35,16 @@ Supported element types:
 | 1st | 3  | Quad4 | 4 (bilinear quadrilateral) |
 | 2nd | 9  | Tri6  | 6 (quadratic triangle) |
 | 2nd | 16 | Quad8 | 8 (serendipity quadrilateral) — preferred for curved geometry |
-| 2nd | 10 | Quad9 | 9 (Lagrange quadrilateral) — centre node silently dropped |
+| 2nd | 10 | Quad9 | 9 (Lagrange quadrilateral) — centre node dropped (reported by `verbose=true`) |
 
 Requirements:
 
 - Radiating surfaces in named groups; obstruction surfaces in separate groups.
-- `Mesh.ElementOrder` selects the order (1 = default → Tri3/Quad4; 2 → Tri6/Quad8).
+- `Mesh.ElementOrder` selects the order (1 = default → Tri3/Quad4; 2 → Tri6 and
+  Quad9). Gmsh writes Quad9 for second-order quads unless
+  `Mesh.SecondOrderIncomplete = 1` is set, which gives true Quad8; either loads
+  as Quad8. Third and higher orders are not supported and raise an error that
+  lists the element types found.
 - Element normals follow node winding, which Gmsh keeps consistent within a
   surface. **Opposing surfaces must be wound to face each other.** No automatic
   orientation is applied for Gmsh or VTK surface meshes; use
@@ -63,7 +67,8 @@ Requirements:
 - Radiating curves in named groups.
 - `Mesh.ElementOrder` selects the order (1 → Line2; 2 → Line3).
 - Normal orientation is corrected automatically at load time for meshes read
-  through Gmsh (see below).
+  through Gmsh, provided the adjacent 2-D surface mesh is in the file (see
+  below).
 - Curve meshes run on the CPU only.
 
 ## Normal orientation for curve meshes
@@ -79,6 +84,16 @@ not from CAD topology. Because it reads connectivity rather than requiring a
 structured/transfinite mesh, it works for unstructured curve meshes too, and
 with `.msh` v2.2 files that carry no CAD topology. Any element whose normal
 points away from that surface interior is flipped.
+
+This needs the **surface elements themselves** in the file, and Gmsh writes only
+elements that belong to a physical group. Either put the surface in a
+`Physical Surface`, or save everything with `Mesh.SaveAll = 1`; a surface with
+no physical group and no `SaveAll` is not in the `.msh` at all. When no adjacent
+surface can be found for a curve (no surface in the file, or one that shares no
+nodes with it, as with a free-standing baffle), `load_mesh` warns and leaves
+that curve's normals as Gmsh wrote them, so check them with
+[`plot_mesh_normals`](@ref) or pass `reverse_normals=true`. If a curve borders
+several surfaces, the one whose centroid is nearest the curve wins.
 
 Curve meshes read through [`load_vtu`](@ref) get **no** automatic correction (a
 warning says so): normals follow the cell's node order.
@@ -195,6 +210,7 @@ Physical Curve("obstruction") = {3};
 Mesh.ElementOrder    = 2;
 Mesh.RecombineAll    = 1;   // produces quads instead of triangles
 Mesh.Algorithm       = 8;   // Frontal-Delaunay for quads
+// Mesh.SecondOrderIncomplete = 1;  // optional: Quad8 instead of Quad9 (both load as Quad8)
 
 Physical Surface("hotplate")  = {1};
 Physical Surface("coldplate") = {2};

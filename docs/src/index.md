@@ -28,7 +28,8 @@ may be mixed freely. Four integration strategies are available:
 
 All four methods run on CPU and support **obstruction detection** via
 BVH-accelerated ray casting. Quadrature, both Monte Carlo variants, and
-obstruction also run on GPU (CUDA and Metal); Duffy is CPU-only.
+obstruction also run on GPU (CUDA and Metal), and so does the Duffy
+transformation, for 3-D surface meshes.
 
 Beyond the integrators, the package can:
 

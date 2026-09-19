@@ -15,14 +15,18 @@ import ..GPUKernels:   build_gpu_arrays, launch_vf_kernel!
 import ..GPUMCKernels: launch_mc_kernel!
 import ..GPURayTraceKernels: launch_raytrace_kernel!, launch_area_kernel!
 import ..Results:      ViewFactorResult, _aggregate
-import ..Assembly:     register_gpu_hook!, build_bvh_lookup
-import ..DuffyKernel:  patch_adjacent_pairs_duffy!
+import ..Assembly:     register_gpu_hook!
+import ..GPUDuffyKernels: launch_duffy_patch!
+import ..DuffyKernel:  near_pairs, touching_pairs
 
 export compute_view_factors_gpu
 
 """
     compute_view_factors_gpu(mesh, nquad, backend, FloatT, ArrayT;
-                             obstruction_groups, verbose) -> ViewFactorResult
+                             obstruction_groups=Int[], verbose=true,
+                             monte_carlo=false, n_samples=10000, factor=3.0,
+                             use_duffy=false, facing_cull=true,
+                             raytrace=false, n_rays=10000) -> ViewFactorResult
 
 GPU implementation of compute_view_factors.
 
@@ -37,6 +41,13 @@ GPU implementation of compute_view_factors.
 `factor`             — near-pair Duffy-patch radius, in element diameters
                         (see `near_pairs` in `DuffyKernel.jl`); only used
                         when `monte_carlo=true`.
+`use_duffy`          — after the quadrature kernel, re-evaluate every pair of
+                        same-family quads sharing a vertex or edge with the
+                        Duffy transformation, on the device (see
+                        `GPUDuffyKernels.jl`); the same values as the CPU
+                        `use_duffy=true`. The Monte Carlo path always patches
+                        its near pairs this way, whatever this flag says;
+                        it has no effect with `raytrace=true`.
 `raytrace`/`n_rays`  — ray-shooting Monte Carlo instead of either the
                         deterministic or pair-area-sampling kernels above;
                         see `compute_view_factors`'s own docstring in
@@ -53,6 +64,7 @@ function compute_view_factors_gpu(mesh               ::MeshData,
                                    monte_carlo       ::Bool        = false,
                                    n_samples         ::Int         = 10000,
                                    factor            ::Float64     = 3.0,
+                                   use_duffy         ::Bool        = false,
                                    facing_cull       ::Bool        = true,
                                    raytrace          ::Bool        = false,
                                    n_rays            ::Int         = 10000)::ViewFactorResult
@@ -108,6 +120,26 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     end
     verbose && println("  …kernel done.")
 
+    # The 1/r² kernel has unbounded variance for vertex/edge-adjacent pairs —
+    # sampling more doesn't fix this, on GPU any more than on CPU — and plain
+    # quadrature converges slowly there. Re-evaluate those O(N) pairs on the
+    # device with the deterministic Duffy transformation, overwriting what the
+    # bulk kernel wrote (see GPUDuffyKernels.jl). Monte Carlo patches every
+    # pair within `factor` element diameters (the touching ones get the Duffy
+    # integral, the merely close ones plain quadrature); the quadrature path
+    # patches only the touching pairs, and only when asked (`use_duffy`).
+    patch_pairs = monte_carlo ? near_pairs(mesh.coords, mesh.surface_elems; factor=factor) :
+                  use_duffy   ? touching_pairs(mesh.surface_elems) :
+                                Tuple{Int,Int}[]
+    if !isempty(patch_pairs)
+        verbose && print("  Duffy transformation for $(length(patch_pairs)) adjacent/near pair(s) (on device)… ")
+        launch_duffy_patch!(raw_dev, ga, backend,
+                             ArrayT(Int32[p[1] for p in patch_pairs]),
+                             ArrayT(Int32[p[2] for p in patch_pairs]);
+                             flat_bvh=flat_bvh)
+        verbose && println("done.")
+    end
+
     # Copy results back to CPU
     raw_cpu  = Array(raw_dev)
     area_cpu = Array(area_dev)
@@ -131,18 +163,6 @@ function compute_view_factors_gpu(mesh               ::MeshData,
     # Promote to Float64 for all post-processing (aggregation, reciprocity checks)
     raw_f64  = Float64.(raw_cpu)
     area_f64 = Float64.(area_cpu)
-
-    # The 1/r² kernel has unbounded variance for vertex/edge-adjacent
-    # pairs — sampling more doesn't fix this, on GPU any more than on CPU.
-    # Patch those O(N) pairs on the CPU with the deterministic Duffy
-    # transform, on top of whatever ran on the GPU for the O(N²) bulk.
-    if monte_carlo
-        verbose && print("  Patching adjacent-pair singularities (Duffy, CPU)… ")
-        get_bvh = build_bvh_lookup(mesh, obstruction_groups)
-        patch_adjacent_pairs_duffy!(raw_f64, mesh.coords, mesh.surface_elems,
-                                     nquad, mesh.mesh_dim, get_bvh; factor=factor)
-        verbose && println("done.")
-    end
 
     # Divide each row i by A[i] to get F_elem
     F_elem = raw_f64 ./ reshape(area_f64, N, 1)

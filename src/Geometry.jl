@@ -258,6 +258,13 @@ end
 # Shape functions: N_a = ¼(1+ξ_a ξ)(1+η_a η)
 # ---------------------------------------------------------------------------
 
+"""
+    quad4_shape(ξ, η) -> (N, dNdξ, dNdη)
+
+Bilinear shape functions of the Quad4 element at (ξ,η) ∈ [-1,1]², and their
+derivatives, as `SVector{4,Float64}`s in Gmsh corner order
+`(-1,-1), (1,-1), (1,1), (-1,1)`.
+"""
 @inline function quad4_shape(ξ::Float64, η::Float64)
     N    = SVector(0.25*(1-ξ)*(1-η), 0.25*(1+ξ)*(1-η),
                    0.25*(1+ξ)*(1+η), 0.25*(1-ξ)*(1+η))
@@ -312,6 +319,12 @@ end
 # Shape functions: N1=½(1-ξ), N2=½(1+ξ)
 # ---------------------------------------------------------------------------
 
+"""
+    line2_shape(ξ) -> (N, dNdξ)
+
+Linear shape functions of the Line2 element at ξ ∈ [-1,1], and their
+derivatives, as `SVector{2,Float64}`s ordered `[first endpoint, second endpoint]`.
+"""
 @inline function line2_shape(ξ::Float64)
     N  = SVector(0.5*(1.0-ξ), 0.5*(1.0+ξ))
     dN = SVector(-0.5, 0.5)

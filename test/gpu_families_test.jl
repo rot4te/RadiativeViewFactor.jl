@@ -127,7 +127,7 @@ using KernelAbstractions: CPU
                                             monte_carlo=true, n_samples=4000, verbose=true)
     end
     @test all(x -> isapprox(x, 1.0; atol=0.03), vec(sum(r_cube.F_elem, dims=2)))
-    @test occursin("Patching adjacent-pair singularities", out)
+    @test occursin("Duffy transformation for", out)
   end
 
   @testset "verbose progress output" begin

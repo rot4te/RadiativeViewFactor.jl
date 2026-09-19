@@ -94,7 +94,7 @@ and the other three to ``\rho \eta_k`` (``\eta_k \in [0,1]``), giving a
 lower-triangular Jacobian with determinant ``\rho^3``:
 
 ```math
-K \cdot dA_i \cdot dA_j \cdot |\text{Jac}| \sim \frac{1}{\rho^2} \cdot \rho^2 \cdot \rho^3 = \rho^3 \to 0
+K \cdot |\text{Jac}| \sim \frac{1}{\rho^2} \cdot \rho^3 = \rho \to 0
 \quad \text{as } \rho \to 0
 ```
 

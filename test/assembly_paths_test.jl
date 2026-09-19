@@ -202,8 +202,10 @@ end
       @test seen[].FloatT === Float32 && seen[].ArrayT === Array && seen[].nquad == 5
       @test seen[].kw[:n_rays] == 77 && seen[].kw[:raytrace] == false
 
-      @test_logs (:warn, r"use_duffy is CPU-only") compute_view_factors(
-          mesh; backend=RegisteredBackend(), use_duffy=true, verbose=false)
+      # use_duffy is forwarded to the device path (no longer "CPU-only")
+      @test_logs compute_view_factors(mesh; backend=RegisteredBackend(), use_duffy=true,
+                                       verbose=false)
+      @test seen[].kw[:use_duffy] === true
 
       # a backend *type* is instantiated; on the CPU backend it is not a GPU dispatch
       seen[] = nothing

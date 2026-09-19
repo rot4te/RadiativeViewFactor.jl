@@ -41,6 +41,7 @@ element pair. Increase `nquad` when:
 A convergence study is the most reliable guide:
 
 ```julia
+using Printf
 for n in [2, 4, 6, 8, 12]
     result = compute_view_factors(mesh; nquad=n, verbose=false)
     i = findfirst(==("emitter"),  result.group_names)
@@ -64,9 +65,11 @@ Lower it for a quick look at a large mesh; raise it only if an `n_samples`
 sweep on your own geometry shows the noise still dominating. Geometries with
 many obstructions or near-singular pairs have a larger σ and may need more.
 
-Pairs that share a vertex or edge, or sit close to each other, are not sampled
-at all: they are patched with the deterministic Duffy value, at `nquad` (and
-within `factor` element diameters, default 3.0). Raising `factor` does not by
+Pairs that share a vertex or edge, or sit close to each other, are not left to
+the samples: they are patched with a deterministic value at `nquad` — the Duffy
+integral for touching quads, plain quadrature for merely close pairs — within
+`factor` element diameters (default 3.0). The CPU skips them in the sampling
+loop; on a GPU a second kernel overwrites them afterwards. Raising `factor` does not by
 itself make those pairs more accurate — `nquad` is the more effective lever
 for closure error on meshes with large or elongated elements.
 

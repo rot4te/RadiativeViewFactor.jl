@@ -16,8 +16,8 @@ using RadiativeViewFactor
 result = compute_view_factors(mesh; nquad=4, backend=CUDABackend())
 ```
 
-CUDA runs in **Float64** throughout. All features except `use_duffy`,
-`self_vf`, and `surface_dim=1` are supported.
+CUDA runs in **Float64** throughout. All features except `self_vf` and
+`surface_dim=1` are supported.
 
 ## Apple Silicon (Metal)
 
@@ -53,8 +53,9 @@ result = compute_view_factors(mesh; monte_carlo=true, n_samples=5000,
 ```
 
 As on the CPU, pairs sharing a vertex or edge (and other near pairs) are
-patched afterwards with the deterministic Duffy transform, which runs on the
-**CPU** on top of the GPU bulk.
+patched afterwards with the deterministic Duffy transform. The patch runs on the
+GPU too, as a second kernel over the O(N) listed pairs (see
+[Duffy transformation on GPU](@ref) below).
 
 Each thread also estimates the areas of its two elements from its own samples,
 and every thread in a row writes the same element's area, so which estimate
@@ -99,10 +100,32 @@ the run proceeds without obstruction.
 
 `facing_cull` and `radiating_groups` work on GPU as on CPU.
 
+## Duffy transformation on GPU
+
+`use_duffy=true` works on GPU backends. The all-pairs quadrature kernel runs
+first and gives every pair the plain quadrature value; a second kernel then
+re-evaluates only the pairs that share a vertex or an edge (Quad4–Quad4 and
+Quad8–Quad8, the same pairs the CPU treats specially) with the Duffy
+transformation, one thread per pair, and overwrites their entries:
+
+```julia
+result = compute_view_factors(mesh; nquad=6, use_duffy=true,
+                               backend=CUDABackend())
+```
+
+The device kernel follows the CPU implementation region for region, including
+obstruction, so in Float64 the two agree to roundoff (the test suite checks
+this on the KernelAbstractions CPU backend). The pair-area Monte Carlo path uses
+the same kernel for its near-pair patch, where merely close pairs (and any
+triangle or mixed-family pairs) get plain quadrature instead of the Duffy
+integral. Like the other kernels it is submitted in short chunks, since a Duffy
+pair costs `4 nquad⁴` (shared vertex) or `6 nquad⁴` (shared edge) point-pair
+evaluations. On Metal the integrals are accumulated in Float32, like everything
+else on that backend.
+
 ## Constraints
 
 - `surface_dim=1` (curve meshes) is not supported on GPU; use `CPU()`
-- `use_duffy=true` is CPU-only; on a GPU backend it is ignored with a warning
 - `self_vf=true` is CPU-only and is silently ignored on GPU backends; with
   `raytrace=true` it is an error on any backend
 - `rng` is ignored on GPU backends

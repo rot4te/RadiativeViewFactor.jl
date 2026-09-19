@@ -87,8 +87,9 @@ Assemble the full view factor matrix at element and physical-group level.
                           amount of sampling fixes those; this function
                           therefore always patches those O(N) pairs
                           afterward with the deterministic Duffy transform
-                          (CPU-only, using `nquad` above), on top of
-                          whichever backend the bulk ran on. `use_duffy` has
+                          (using `nquad` above; on the device on a GPU
+                          backend), on top of whichever backend the bulk
+                          ran on. `use_duffy` has
                           no separate effect here — the patch is
                           unconditional whenever `monte_carlo=true`.
 - `n_samples`           : MC sample pairs **per element pair** (default 5000).
@@ -121,8 +122,9 @@ Assemble the full view factor matrix at element and physical-group level.
 - `use_duffy`           : apply the Duffy singularity transformation (see
                           `DuffyKernel.jl`) for same-order quad pairs (Quad4
                           or Quad8) sharing a vertex or edge, in the plain
-                          quadrature path. CPU only: on a GPU backend it is
-                          ignored with a warning. Has no effect when
+                          quadrature path, on the CPU or (for 3-D meshes) on
+                          a GPU backend, where the touching pairs are
+                          re-evaluated by a device kernel. Has no effect when
                           `monte_carlo=true` (that path always Duffy-patches
                           adjacent pairs regardless of this flag) or
                           `raytrace=true`. Not applicable to curve meshes.
@@ -270,9 +272,6 @@ function compute_view_factors(mesh               ::MeshData;
                            "The enclosure is now open, so row sums will not close to 1.")
     end
 
-    use_duffy && !monte_carlo && !(backend isa CPU) &&
-        @warn "use_duffy is CPU-only; ignored for GPU backends."
-
     if mesh.mesh_dim == 1
         raytrace &&
             error("raytrace does not support curve meshes (mesh_dim=1) yet. " *
@@ -288,7 +287,7 @@ function compute_view_factors(mesh               ::MeshData;
         return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                                   obstruction_groups, verbose,
                                   monte_carlo, n_samples, factor, facing_cull,
-                                  raytrace, n_rays)
+                                  raytrace, n_rays, use_duffy)
     end
 
     raytrace &&
@@ -622,7 +621,7 @@ const _GPU_HOOK_REF = Ref{Any}(nothing)
 
 function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                             obstruction_groups, verbose, monte_carlo, n_samples,
-                            factor, facing_cull, raytrace, n_rays)
+                            factor, facing_cull, raytrace, n_rays, use_duffy)
     _GPU_HOOK_REF[] === nothing &&
         error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
     return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
@@ -633,7 +632,8 @@ function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                              factor=factor,
                              facing_cull=facing_cull,
                              raytrace=raytrace,
-                             n_rays=n_rays)
+                             n_rays=n_rays,
+                             use_duffy=use_duffy)
 end
 
 """

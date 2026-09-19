@@ -13,7 +13,7 @@ include("ElementBounds.jl")  # conservative per-element sphere + normal cone
 include("BVH.jl")
 include("RayCast.jl")
 include("ViewFactorKernel.jl")
-include("DuffyKernel.jl")   # Sauter-Schwab Duffy transformation for singular pairs
+include("DuffyKernel.jl")   # Duffy transformation for vertex/edge-sharing pairs
 include("MCKernel.jl")      # CPU Monte Carlo integrator (pair-area sampling)
 include("RayTraceKernel.jl") # CPU Monte Carlo integrator (ray-shooting)
 include("Results.jl")       # ViewFactorResult, _aggregate — no upstream deps
@@ -22,6 +22,7 @@ include("GPUBVH.jl")
 include("GPUKernels.jl")
 include("GPUMCKernels.jl")       # GPU Monte Carlo kernel (pair-area sampling)
 include("GPURayTraceKernels.jl") # GPU Monte Carlo kernel (ray-shooting)
+include("GPUDuffyKernels.jl")     # GPU Duffy transformation (singular / near-pair patch)
 include("Assembly.jl")      # imports Results; defines register_gpu_hook!
 include("GPUAssembly.jl")   # imports Results + Assembly.register_gpu_hook!;
                              # calls register_gpu_hook!(compute_view_factors_gpu)
