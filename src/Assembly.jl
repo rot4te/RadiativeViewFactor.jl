@@ -552,20 +552,24 @@ function _compute_cpu_raytrace(mesh              ::MeshData,
 
     # Reciprocity by construction: average the two independent raw
     # double-integral estimates each unordered pair has (raw = F * A_source),
-    # then store that one shared value at both [i,j] and [j,i] — exactly the
-    # convention the other CPU paths already use (their `raw_integral[i,j] ==
-    # raw_integral[j,i]` by construction, just computed once instead of
-    # averaged twice). Being the average of two independent unbiased
-    # estimates of the same quantity, this is also lower-variance than
-    # either row's estimate alone.
-    raw_integral = zeros(Float64, N, N)
+    # then store F_{i->j} = raw/A_i and F_{j->i} = raw/A_j directly back into
+    # F_raw's own storage. This used to go through two more N×N arrays
+    # (`raw_integral`, then the broadcasted division into a new `F_elem`) on
+    # top of F_raw itself — a 3x peak-memory multiplier that matters once N
+    # is in the tens of thousands (a 48,993-element mesh needs ~19.2 GB per
+    # N×N Float64 matrix, so the old code's ~58 GB transient peak could
+    # approach or exceed a workstation's RAM well before compute cost did;
+    # see changelog.md). Each F_raw[i,j]/F_raw[j,i] pair is read exactly
+    # once before being overwritten, so this in-place pass is safe.
     @inbounds for i in 1:N, j in i+1:N
         r = 0.5 * (F_raw[i,j] * A_elem[i] + F_raw[j,i] * A_elem[j])
-        raw_integral[i,j] = r
-        raw_integral[j,i] = r
+        F_raw[i,j] = r / A_elem[i]
+        F_raw[j,i] = r / A_elem[j]
     end
-
-    F_elem = raw_integral ./ reshape(A_elem, N, 1)
+    @inbounds for i in 1:N
+        F_raw[i,i] = 0.0   # raytrace never estimates a self view factor
+    end
+    F_elem = F_raw
 
     group_tags, group_names, F_group, A_group = _aggregate(mesh, F_elem, A_elem)
 

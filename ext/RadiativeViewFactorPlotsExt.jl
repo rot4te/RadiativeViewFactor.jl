@@ -15,6 +15,7 @@ module RadiativeViewFactorPlotsExt
 
 using Plots
 using LinearAlgebra
+using Statistics: mean
 
 import RadiativeViewFactor: MeshData, SurfaceElement, plot_mesh_normals,
                              quad8_physical_point, quad8_normal_and_area_element,

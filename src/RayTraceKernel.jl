@@ -102,6 +102,7 @@ using Random
 import ..BVH:      BVHTree, build_bvh, nearest_hit_bvh
 import ..MeshIO:   SurfaceElement, _is_quad
 import ..MCKernel: _sample_element
+import ..Geometry: quad8_physical_point
 
 export SceneBVH, build_scene_bvh, raytrace_element
 
@@ -123,21 +124,48 @@ struct SceneBVH
     elem_of :: Vector{Int}
 end
 
-"""Corner-triangulate every element of `elems` (2 triangles per quad, the
-same v1,v2,v3 / v1,v3,v4 split `MeshIO._build_group_obs_soups` already uses
-for obstruction soups, so this is consistent with the faceting the rest of
-the package already applies to curved 2nd-order elements for occlusion
-purposes), tagged with its 1-based index into `elems`."""
+"""Number of cells per parametric direction used to facet a curved (Quad8)
+element for the ray-tracing scene. Rays *leave* an element from its exact
+isoparametric surface (`_sample_element`), so the scene they *land* on has to
+follow the same surface or the two disagree: with a single corner quad, a
+sphere faceted 6x6 per cubed-sphere block loses 1.5 % of its area, and the
+missing solid angle lands on whatever is behind it. Chord error falls as the
+square of the cell size, so 3 x 3 cuts that to about 0.2 % for 18 triangles per
+element, which is cheap next to the nearest-hit queries themselves."""
+const QUAD8_SCENE_SUBDIV = 3
+
+"""Triangulate every element of `elems`, tagged with its 1-based index into
+`elems`. Straight-sided elements give 2 triangles per quad (the same
+v1,v2,v3 / v1,v3,v4 split `MeshIO._build_group_obs_soups` uses); curved Quad8
+elements are subdivided on a `QUAD8_SCENE_SUBDIV`² parametric lattice through
+their isoparametric map, so the scene follows the real surface."""
 function _triangulate_tagged(coords::Matrix{Float64}, elems::Vector{SurfaceElement})
+    k    = QUAD8_SCENE_SUBDIV
     ntri = 0
     for e in elems
-        ntri += _is_quad(e.family) ? 2 : 1
+        ntri += e.family === :quad ? 2k^2 : (_is_quad(e.family) ? 2 : 1)
     end
     soup    = Array{Float64,3}(undef, 3, 3, ntri)
     elem_of = Vector{Int}(undef, ntri)
     t = 0
     @inbounds for (ei, e) in enumerate(elems)
         c = e.nodes
+        if e.family === :quad
+            # curved: walk a (k+1)² lattice of the [-1,1]² parametric square
+            for a in 1:k, b in 1:k
+                ξ0, ξ1 = -1 + 2(a-1)/k, -1 + 2a/k
+                η0, η1 = -1 + 2(b-1)/k, -1 + 2b/k
+                p00 = quad8_physical_point(coords, c, ξ0, η0)
+                p10 = quad8_physical_point(coords, c, ξ1, η0)
+                p11 = quad8_physical_point(coords, c, ξ1, η1)
+                p01 = quad8_physical_point(coords, c, ξ0, η1)
+                t += 1
+                soup[:,1,t] = p00; soup[:,2,t] = p10; soup[:,3,t] = p11; elem_of[t] = ei
+                t += 1
+                soup[:,1,t] = p00; soup[:,2,t] = p11; soup[:,3,t] = p01; elem_of[t] = ei
+            end
+            continue
+        end
         v1 = SVector{3,Float64}(coords[1,c[1]], coords[2,c[1]], coords[3,c[1]])
         v2 = SVector{3,Float64}(coords[1,c[2]], coords[2,c[2]], coords[3,c[2]])
         v3 = SVector{3,Float64}(coords[1,c[3]], coords[2,c[3]], coords[3,c[3]])

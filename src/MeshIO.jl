@@ -810,6 +810,13 @@ end
 # and local face → corner map (BC `iside` is 1-based into this tuple):
 const _RE2_HEX_FACE = ((1,2,6,5), (2,3,7,6), (3,4,8,7),
                        (4,1,5,8), (1,2,3,4), (5,6,7,8))
+# The hex's 12 edges as corner pairs, in the same corner convention. Used to
+# attach `.re2` mid-side-node ('m') curve records to edges — see
+# `_re2_edge_midsides` for why the record's own edge index is not used.
+const _RE2_HEX_EDGE = ((1,2), (2,3), (3,4), (4,1), (5,6), (6,7), (7,8), (8,5),
+                       (1,5), (2,6), (3,7), (4,8))
+# One curved-side record: (element, mid-side point). Only 'm' records are kept.
+const _Re2Curve = Tuple{Int, NTuple{3,Float64}}
 # Boundary-condition codes that denote genuinely *internal* connections, not
 # part of the domain's topological boundary: 'E' (conforming element-element
 # face) and blank (unset). 'P' (periodic) is *not* included here — although
@@ -843,10 +850,12 @@ function _re2_reals(bytes::Vector{UInt8}, off::Int, n::Int, ::Type{T},
 end
 
 # Parse the full .re2 payload for a given word size / endianness. Returns
-# `(ok, corners, bc)` where `corners` is (3, 8, nelgt) hex corner coordinates
-# and `bc` is a vector of (element, face, code) boundary records. `ok` is false
-# (without throwing) when the layout does not consume the file exactly, so the
-# caller can try a different `wdsize`.
+# `(ok, corners, bc, curves)` where `corners` is (3, 8, nelgt) hex corner
+# coordinates, `bc` is a vector of (element, face, code, phys_tag) boundary
+# records and `curves` is a vector of (element, midside point, code) curved-side
+# records (only the `'m'` — mid-side-node — form is kept; see
+# `_re2_edge_midsides`). `ok` is false (without throwing) when the layout does
+# not consume the file exactly, so the caller can try a different `wdsize`.
 function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
                     wdsize::Int, swap::Bool)
     T       = wdsize == 8 ? Float64 : Float32
@@ -855,11 +864,13 @@ function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
     recsize = 7 * wdsize + 8               # curve / bc record: 7 reals + char*8
     total   = length(bytes)
     off     = 84                           # 80-byte header + 4-byte endian tag
+    nobc    = Tuple{Int,Int,String,Int}[]
+    nocurve = _Re2Curve[]
 
     corners = Array{Float64,3}(undef, 3, nvert, nelgt)
     for e in 1:nelgt
         vals, off = _re2_reals(bytes, off, 1 + ncoord, T, swap)   # igroup + coords
-        off > total && return (false, corners, Tuple{Int,Int,String,Int}[])
+        off > total && return (false, corners, nobc, nocurve)
         @inbounds for v in 1:nvert
             corners[1, v, e] = vals[1 + v]                 # x block
             corners[2, v, e] = vals[1 + nvert + v]         # y block
@@ -867,22 +878,32 @@ function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
         end
     end
 
-    # curved-side block: count, then ncurve records (skipped — corners suffice)
-    off + wdsize > total && return (false, corners, Tuple{Int,Int,String,Int}[])
+    # curved-side block: count, then ncurve records
+    off + wdsize > total && return (false, corners, nobc, nocurve)
     cval, off = _re2_reals(bytes, off, 1, T, swap)
     ncurve    = round(Int, cval[1])
     (ncurve < 0 || off + ncurve*recsize > total) &&
-        return (false, corners, Tuple{Int,Int,String,Int}[])
-    off += ncurve * recsize
+        return (false, corners, nobc, nocurve)
+    curves = _Re2Curve[]
+    for _ in 1:ncurve
+        r, off = _re2_reals(bytes, off, 7, T, swap)   # elem, edge, 5 params
+        code   = strip(String(bytes[off+1 : off+8]), [' ', '\0'])   # char*8 slot
+        off   += 8
+        # Only the 'm' (mid-side node) form carries an explicit point; the
+        # analytic forms ('C' circle, 's' sphere, ...) describe the edge by
+        # radius/centre instead and are ignored here — gmsh2nek writes 'm'
+        # for every curved edge it exports, which is the case this supports.
+        code == "m" && push!(curves, (round(Int, r[1]), (r[3], r[4], r[5])))
+    end
 
     # boundary-condition block: one or more fields, each `nbc` then nbc records
     bc = Tuple{Int,Int,String,Int}[]
     while off < total
-        off + wdsize > total && return (false, corners, bc)
+        off + wdsize > total && return (false, corners, bc, curves)
         nval, off = _re2_reals(bytes, off, 1, T, swap)
         nbc       = round(Int, nval[1])
         (nbc < 0 || nbc > 6*nelgt || off + nbc*recsize > total) &&
-            return (false, corners, bc)
+            return (false, corners, bc, curves)
         for _ in 1:nbc
             r, off = _re2_reals(bytes, off, 7, T, swap)   # elem, face, 5 params
             code   = rstrip(String(bytes[off+1 : off+3]), [' ', '\0'])  # char*8 slot
@@ -894,14 +915,17 @@ function _re2_parse(bytes::Vector{UInt8}, nelgt::Int, ndim::Int,
         end
     end
 
-    return (off == total, corners, bc)
+    return (off == total, corners, bc, curves)
 end
 
 """
-    load_re2(filename; surface_dim=2, reverse_normals=false, verbose=true) -> MeshData
+    load_re2(filename; surface_dim=2, reverse_normals=false, curved=true,
+             verbose=true) -> MeshData
 
 Load a Nek5000/NekRS `.re2` binary mesh. The 3D hex volume mesh's boundary
-faces become radiating Quad4 surfaces, grouped by their Nek boundary-condition
+faces become radiating Quad8 surfaces when the file carries mid-side-node
+(`'m'`) curved-side records and `curved=true` (the default), and Quad4
+surfaces otherwise, grouped by their Nek boundary-condition
 label. Only genuinely internal faces (`cbc = 'E'` or blank) are skipped;
 periodic (`'P'`) faces are kept as their own group, matching Nek5000/NekRS's
 own view-factor convention of including every non-internal boundary face in
@@ -913,10 +937,42 @@ labels alone. Each element's Nek global element number and local face index
 factors back into Nek5000's `(element, face)` bookkeeping — see
 [`write_nekrs_view_factors`](@ref). Word size (4- or 8-byte reals) and byte
 order are auto-detected. Only `surface_dim=2` (3D → surfaces) is supported.
+
+# Curvature (`curved`)
+
+A Nek element face is curved, and `.re2` records that curvature as a mid-side
+point per curved edge. Representing such a face by the flat quad through its 4
+corners understates its area — by 1.5 % for a sphere meshed 6x6 per cubed-sphere
+block — and every view factor from it with it. Worse for a solver, the
+resulting `F` is reciprocal (`AᵢFᵢⱼ = AⱼFⱼᵢ`) with respect to those flat areas
+while Nek5000/NekRS integrates fluxes over the curved faces, so the enclosure
+energy balance `Σᵢ Aᵢ qᵢ = 0` no longer holds: a 1.5 % area error became a 10 %
+error in the net radiative exchange in the single-pebble case that prompted
+this, because the net flux is a small difference of large radiosities.
+
+With `curved=true` every boundary face therefore becomes a Quad8 whose
+mid-side nodes come from the file's `'m'` records (edges without a record get
+the straight mid-point, so a mesh is all-Quad8 or all-Quad4 and the Duffy
+near-pair path stays available for every pair). `curved=false` restores the
+previous corners-only behaviour; files with no `'m'` records load as Quad4
+either way, unchanged.
+
+Only the `'m'` form is read. The analytic curved-side forms (`'C'` circle,
+`'s'` sphere) describe an edge by radius/centre rather than by a point and are
+ignored — `gmsh2nek` writes `'m'` for every curved edge it exports.
+
+!!! note "Ray shooting sees a coarser surface"
+    The `raytrace=true` kernel tests hits against a triangulation of each
+    element. Curved faces are subdivided (see `RayTraceKernel`), but the
+    scene is still piecewise flat, so ray-shot view factors on a curved mesh
+    carry a small extra discretisation error that the quadrature, Monte
+    Carlo, and Duffy kernels — which integrate the Quad8 map directly — do
+    not.
 """
 function load_re2(filename::AbstractString;
                   surface_dim    ::Int  = 2,
                   reverse_normals::Bool = false,
+                  curved         ::Bool = true,
                   verbose        ::Bool = true)::MeshData
     surface_dim == 2 ||
         error(".re2 loading supports 3D hex volume meshes → surfaces only " *
@@ -950,11 +1006,11 @@ function load_re2(filename::AbstractString;
     end
 
     # Auto-detect word size by which layout consumes the file exactly.
-    corners = bc = nothing
+    corners = bc = curves = nothing
     for wd in (8, 4)
-        ok, c, b = _re2_parse(bytes, nelgt, ndim, wd, swap)
+        ok, c, b, cv = _re2_parse(bytes, nelgt, ndim, wd, swap)
         if ok
-            corners, bc = c, b
+            corners, bc, curves = c, b, cv
             verbose && println("  .re2: $(nelgt) hex elements, " *
                                "$(wd)-byte reals, $(swap ? "byte-swapped" : "native") endian")
             break
@@ -965,7 +1021,7 @@ function load_re2(filename::AbstractString;
               "Please share the file — its byte layout may differ from the " *
               "assumed Nek5000 format.")
 
-    return _re2_build_mesh(corners, bc, reverse_normals, verbose)
+    return _re2_build_mesh(corners, bc, curves, curved, reverse_normals, verbose)
 end; export load_re2
 
 # Deduplicate hex corners into a global node list; returns the (3, N) coords
@@ -995,6 +1051,89 @@ function _re2_dedup_nodes(corners::Array{Float64,3})
     return coords, elem_nodes
 end
 
+"""
+    _re2_edge_midsides(corners, elem_nodes, curves, verbose) -> Dict
+
+Map each curved hex edge to the mid-side point `.re2` records for it, keyed by
+the edge's two (deduplicated) corner node indices in sorted order, so the two
+elements that share an edge — and the two boundary faces that share it — land
+on the same entry.
+
+Each `'m'` record names an element and carries the mid-side point itself, but
+its edge index follows Nek5000's own edge numbering, which several mesh
+converters write inconsistently. The edge is therefore identified
+geometrically: the recorded point is attached to whichever of the element's 12
+edges has the nearest straight mid-point. That is unambiguous whenever an
+edge's bow is less than half the distance to its neighbours, which holds for
+any mesh whose elements resolve the curvature at all (a sphere face bowing by
+more than that is not usable as a single element either way). Records that do
+not clear that margin are dropped, and their edges fall back to straight.
+"""
+function _re2_edge_midsides(corners::Array{Float64,3}, elem_nodes::Matrix{Int},
+                            curves::Vector{_Re2Curve}, verbose::Bool)
+    mids    = Dict{Tuple{Int,Int}, NTuple{3,Float64}}()
+    nelgt   = size(corners, 3)
+    dropped = 0
+    for (e, pt) in curves
+        (1 <= e <= nelgt) || (dropped += 1; continue)
+        best, best_d2, best_len2 = 0, Inf, 0.0
+        for (k, (a, b)) in enumerate(_RE2_HEX_EDGE)
+            mx = 0.5 * (corners[1,a,e] + corners[1,b,e])
+            my = 0.5 * (corners[2,a,e] + corners[2,b,e])
+            mz = 0.5 * (corners[3,a,e] + corners[3,b,e])
+            d2 = (pt[1]-mx)^2 + (pt[2]-my)^2 + (pt[3]-mz)^2
+            if d2 < best_d2
+                best, best_d2 = k, d2
+                best_len2 = (corners[1,a,e]-corners[1,b,e])^2 +
+                            (corners[2,a,e]-corners[2,b,e])^2 +
+                            (corners[3,a,e]-corners[3,b,e])^2
+            end
+        end
+        # bow must stay inside half the edge length, else the match is a guess
+        if best == 0 || best_d2 > 0.25 * best_len2
+            dropped += 1
+            continue
+        end
+        a, b = _RE2_HEX_EDGE[best]
+        na, nb = elem_nodes[a, e], elem_nodes[b, e]
+        mids[minmax(na, nb)] = pt
+    end
+    if dropped > 0
+        @warn ".re2: $dropped of $(length(curves)) mid-side records could not be " *
+              "matched to an element edge; those edges are treated as straight."
+    end
+    verbose && !isempty(mids) &&
+        println("  .re2: $(length(mids)) curved edges from mid-side ('m') records")
+    return mids
+end
+
+# Build the 8 node indices of a curved Quad8 face from its 4 (already oriented)
+# corner nodes: corners 1-4, then mid-sides 5=(1,2) 6=(2,3) 7=(3,4) 8=(4,1).
+# Edges without a recorded mid-side get the straight mid-point, so a face is
+# either fully Quad8 or unchanged — the kernels dispatch per element, but a
+# mesh of one family keeps the Duffy near-pair path available for every pair.
+function _re2_face_quad8!(extra::Vector{NTuple{3,Float64}},
+                          nodemap::Dict{Tuple{Int,Int},Int},
+                          coords::Matrix{Float64}, nbase::Int,
+                          mids::Dict{Tuple{Int,Int},NTuple{3,Float64}},
+                          fnodes::NTuple{4,Int})
+    mid_nodes = ntuple(4) do k
+        a, b = fnodes[k], fnodes[k % 4 + 1]
+        key  = minmax(a, b)
+        get!(nodemap, key) do
+            pt = get(mids, key) do
+                (0.5*(coords[1,a] + coords[1,b]),
+                 0.5*(coords[2,a] + coords[2,b]),
+                 0.5*(coords[3,a] + coords[3,b]))
+            end
+            push!(extra, pt)
+            nbase + length(extra)
+        end
+    end
+    return (fnodes[1], fnodes[2], fnodes[3], fnodes[4],
+            mid_nodes[1], mid_nodes[2], mid_nodes[3], mid_nodes[4])
+end
+
 # Orient the four face node indices so the Quad4 normal points *into* the fluid
 # domain — i.e. toward the owner hex's centroid. The hex volume is the radiating
 # cavity, so boundary walls must face inward to exchange radiation across it.
@@ -1011,9 +1150,27 @@ end
 
 function _re2_build_mesh(corners::Array{Float64,3},
                          bc::Vector{Tuple{Int,Int,String,Int}},
+                         curves::Vector{_Re2Curve},
+                         curved::Bool,
                          reverse_normals::Bool, verbose::Bool)::MeshData
     nelgt = size(corners, 3)
     coords, elem_nodes = _re2_dedup_nodes(corners)
+
+    # Curved faces: a Quad8 per boundary face, its mid-side nodes taken from
+    # the file's 'm' records (straight mid-points where a record is missing).
+    # Without this the sphere-like faces of a Nek mesh are flattened to the
+    # quad through their 4 corners, which understates their area — 1.5 % on a
+    # 6x6-per-block cubed sphere — and, because F is then symmetric with
+    # respect to those flat areas rather than the real ones, breaks the
+    # enclosure energy balance that a solver using the true areas relies on.
+    mids     = (curved && !isempty(curves)) ?
+               _re2_edge_midsides(corners, elem_nodes, curves, verbose) :
+               Dict{Tuple{Int,Int},NTuple{3,Float64}}()
+    use_quad8 = !isempty(mids)
+    extra_pts = NTuple{3,Float64}[]
+    mid_index = Dict{Tuple{Int,Int},Int}()
+    nbase     = size(coords, 2)
+    quad8(fnodes) = _re2_face_quad8!(extra_pts, mid_index, coords, nbase, mids, fnodes)
 
     # element centroids (for outward orientation)
     centroid(e) = SVector{3,Float64}(
@@ -1044,7 +1201,8 @@ function _re2_build_mesh(corners::Array{Float64,3},
             fnodes = ntuple(k -> elem_nodes[_RE2_HEX_FACE[iside][k], eg], 4)
             fnodes = _re2_orient_inward(coords, fnodes, centroid(eg))
             gtag   = tag_for(code)
-            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4, eg, iside, ptag))
+            nodes, fam = use_quad8 ? (quad8(fnodes), :quad) : (fnodes, :quad4)
+            push!(surface_elems, SurfaceElement(collect(nodes), gtag, fam, eg, iside, ptag))
             push!(group_elems[gtag], length(surface_elems))
         end
         verbose && println("  .re2: $(length(surface_elems)) boundary faces in " *
@@ -1069,7 +1227,8 @@ function _re2_build_mesh(corners::Array{Float64,3},
             e, f   = face_count[key]
             fnodes = ntuple(k -> elem_nodes[_RE2_HEX_FACE[f][k], e], 4)
             fnodes = _re2_orient_inward(coords, fnodes, centroid(e))
-            push!(surface_elems, SurfaceElement(collect(fnodes), gtag, :quad4, e, f))
+            nodes, fam = use_quad8 ? (quad8(fnodes), :quad) : (fnodes, :quad4)
+            push!(surface_elems, SurfaceElement(collect(nodes), gtag, fam, e, f))
             push!(group_elems[gtag], length(surface_elems))
         end
         verbose && println("  .re2: $(length(surface_elems)) topological " *
@@ -1078,6 +1237,19 @@ function _re2_build_mesh(corners::Array{Float64,3},
 
     isempty(surface_elems) &&
         error("No radiating boundary faces found in .re2 mesh.")
+
+    if !isempty(extra_pts)
+        allc = Matrix{Float64}(undef, 3, size(coords, 2) + length(extra_pts))
+        allc[:, 1:size(coords, 2)] = coords
+        for (j, p) in enumerate(extra_pts)
+            allc[1, nbase + j] = p[1]
+            allc[2, nbase + j] = p[2]
+            allc[3, nbase + j] = p[3]
+        end
+        coords = allc
+        verbose && println("  .re2: $(length(surface_elems)) faces loaded as curved " *
+                           "Quad8 ($(length(extra_pts)) mid-side nodes).")
+    end
 
     if reverse_normals
         _reverse_all_normals!(surface_elems, 2)

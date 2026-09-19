@@ -36,7 +36,7 @@ using .Geometry:  quad8_physical_point, quad8_normal_and_area_element,
 using .ElementBounds: ElementBound, build_element_bound, build_element_bounds,
                       pair_can_see
 using .Results:   ViewFactorResult, aggregate_by_group,
-                  check_reciprocity, check_closure
+                  check_reciprocity, check_closure, enforce_closure
 using .Assembly:  compute_view_factors
 using .NekExport: write_nekrs_view_factors
 
@@ -47,6 +47,7 @@ export load_mesh,
        aggregate_by_group,
        check_reciprocity,
        check_closure,
+       enforce_closure,
        write_nekrs_view_factors,
        plot_mesh_normals,
        MeshData,

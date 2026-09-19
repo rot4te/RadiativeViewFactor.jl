@@ -1,14 +1,13 @@
 # test/runtests.jl
 using Test
 
-include(joinpath(@__DIR__, "..", "src", "RadiativeViewFactor.jl"))
-using .RadiativeViewFactor
-using .RadiativeViewFactor.Quadrature
-using .RadiativeViewFactor.Geometry
-using .RadiativeViewFactor.BVH
-using .RadiativeViewFactor.RayCast
-using .RadiativeViewFactor.ViewFactorKernel
-using .RadiativeViewFactor.MeshIO: SurfaceElement
+using RadiativeViewFactor
+using RadiativeViewFactor.Quadrature
+using RadiativeViewFactor.Geometry
+using RadiativeViewFactor.BVH
+using RadiativeViewFactor.RayCast
+using RadiativeViewFactor.ViewFactorKernel
+using RadiativeViewFactor.MeshIO: SurfaceElement
 using StaticArrays
 using LinearAlgebra
 using Random
@@ -37,6 +36,10 @@ include("GPU_test.jl")
 # ---------------------------------------------------------------------------
 
 include("vtk_test.jl")
+
+# ---------------------------------------------------------------------------
+
+include("plots_test.jl")
 
 # ---------------------------------------------------------------------------
 

@@ -114,6 +114,66 @@ function check_reciprocity(result::ViewFactorResult; tol::Float64=1e-4)::Bool
 end; export check_reciprocity
 
 """
+    enforce_closure(result, mesh; iters=200, tol=1e-12, verbose=true)
+        -> ViewFactorResult
+
+Return a copy of `result` whose `F_elem` satisfies both
+
+    Σⱼ Fᵢⱼ = 1            (closure, every row)
+    Aᵢ Fᵢⱼ = Aⱼ Fⱼᵢ        (reciprocity, with `result.A_elem`)
+
+to machine precision, by alternating a symmetrisation of `Aᵢ Fᵢⱼ` with a
+rescaling of each row — each step perturbs the other, so they are iterated
+(at most `iters` times, stopping once both residuals are below `tol`).
+
+# Why a converged calculation still needs this
+
+Net radiative flux is a *difference* of radiosities, `qᵢ = Jᵢ - Σⱼ FᵢⱼJⱼ`, and
+in a nearly-isothermal enclosure that difference is orders of magnitude
+smaller than `J` itself: in the single-pebble NekRS case this function was
+written for, `J ≈ 5.9e4 W/m²` and `q ≈ 2.5e2 W/m²`. A row-sum error of `ε`
+therefore leaks `ε·J` straight into `q` — 0.3 % of closure becomes 70 % of the
+answer. Exact row sums remove that channel entirely: with `Σⱼ Fᵢⱼ = 1` an
+isothermal enclosure gives `q = 0` identically, whatever the remaining
+per-pair errors, so only genuine temperature differences drive a flux.
+
+Reaching that by sampling alone is hopeless — Monte Carlo closure error falls
+as `1/√n_rays`, so `ε = 1e-5` would need about `1e10` rays per element — and
+quadrature on curved elements plateaus around `1e-3`. Enforcing the two
+identities the view factors must satisfy anyway is the cheap route.
+
+# When not to use it
+
+Only for a **closed** enclosure, where every row genuinely sums to 1. A result
+from `compute_view_factors(...; radiating_groups=...)`, or any geometry open
+to the surroundings, has rows that legitimately sum to less than 1 (see
+[`check_closure`](@ref)), and forcing them to 1 would invent radiation that
+is not there.
+"""
+function enforce_closure(result::ViewFactorResult, mesh::MeshData;
+                         iters::Int=200, tol::Float64=1e-12,
+                         verbose::Bool=true)::ViewFactorResult
+    F = copy(result.F_elem)
+    A = result.A_elem
+    row_err = rec_err = NaN
+    for _ in 1:iters
+        M = A .* F                        # Aᵢ Fᵢⱼ
+        M = 0.5 .* (M .+ transpose(M))    # reciprocity
+        F = M ./ A
+        rows = vec(sum(F, dims=2))
+        F  ./= rows                       # closure
+        row_err = maximum(abs.(rows .- 1.0))
+        M2      = A .* F
+        rec_err = maximum(abs.(M2 .- transpose(M2))) / max(maximum(M2), 1e-30)
+        (row_err < tol && rec_err < tol) && break
+    end
+    verbose && println("enforce_closure: row-sum residual $(row_err), " *
+                       "reciprocity residual $(rec_err)")
+    tags, names, Fg, Ag = _aggregate(mesh, F, A)
+    return ViewFactorResult(F, A, Fg, Ag, tags, names)
+end; export enforce_closure
+
+"""
     check_closure(result; tol=1e-3) -> Bool
 
 Verify that no row of `F_elem` sums to more than 1 + `tol`.

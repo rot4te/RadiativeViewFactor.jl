@@ -1,0 +1,5 @@
+# Vendor-GPU extensions cannot be loaded on the CI runners (no CUDA/Metal
+# hardware); the GPU kernels themselves are covered via the CPU backend.
+ignore:
+  - "ext/RadiativeViewFactorCUDAExt.jl"
+  - "ext/RadiativeViewFactorMetalExt.jl"
