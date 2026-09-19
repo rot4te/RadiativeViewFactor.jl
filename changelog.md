@@ -1,3 +1,76 @@
+# 2026-09-19
+
+## Duffy transformation on GPU (`use_duffy=true`, and the Monte Carlo near-pair patch)
+
+`use_duffy` used to be CPU-only (ignored with a warning on a GPU backend), so a
+closed enclosure on the GPU quadrature path had every shared-edge pair
+unresolved: row sums of a unit cube came out 1.24 instead of 1. The pair-area
+Monte Carlo path did patch those pairs, but on the CPU after the device kernel
+had finished, in Float64 whatever the backend.
+
+- `src/GPUDuffyKernels.jl` (new): `launch_duffy_patch!` re-evaluates a *list*
+  of element pairs on the device and overwrites their entries in the raw
+  matrix, one thread per pair. Two same-family quads sharing one corner get the
+  4-region vertex integral, sharing two corners the 6-region edge integral
+  (both reproduced region for region from `DuffyKernel.jl`, obstruction
+  included); every other listed pair gets plain quadrature. The all-pairs
+  kernels stay untouched, since only O(N) pairs need this. Launched in chunks
+  sized from the measured rate, as the other kernels are, because a Duffy pair
+  costs `4 nquad⁴` or `6 nquad⁴` point-pair evaluations.
+- `src/GPUKernels.jl`: the body of the all-pairs quadrature kernel is now
+  `_pair_quadrature`, shared with the patch kernel (which needs plain quadrature
+  for near pairs that do not touch, and for triangles). `build_gpu_arrays` gains
+  the 1-D Gauss–Legendre rule on [0,1] (`gl_pts01`, `gl_wts01`).
+- `src/DuffyKernel.jl`: `touching_pairs(elems)`, the pairs for which
+  `singularity_type` is not `NONE`, from a corner-node table (linear in the
+  element count).
+- `src/GPUAssembly.jl`, `src/Assembly.jl`: `use_duffy` is forwarded to the GPU
+  path and patches the touching pairs after the quadrature kernel; the Monte
+  Carlo path patches its near pairs on the device instead of the CPU. The
+  "use_duffy is CPU-only" warning is gone. `raytrace=true` still ignores it.
+- On Metal the patched pairs are now Float32 like the rest of that backend
+  (the CPU patch was Float64). The device code builds every literal from the
+  element type so nothing is promoted to Float64, which Metal cannot compile.
+- Verified on the KernelAbstractions CPU backend only; no GPU was available.
+  In Float64 the device Duffy result equals the CPU one to roundoff (5.6e-17
+  on a Quad4 and a Quad8 unit cube, `nquad=8`), for all 16 node numberings of a
+  shared edge (Quad4 and Quad8) and for the vertex case, with and without an obstruction, and the
+  Float32 run agrees with Float64 to 2e-4. The new `test/gpu_duffy_test.jl`
+  covers this, the chunked launcher, and type stability at Float32
+  (`@inferred`), which is what would catch a Float64 leak.
+
+## Fixes found while raising test coverage
+
+The coverage pass (`test/gpu_families_test.jl`, `curve_mesh_test.jl`,
+`vtk_extra_test.jl`, `assembly_paths_test.jl`; 78 % to 99.9 % of lines, by a local count) turned up
+three defects, fixed here.
+
+- **2-D obstruction leaked** (`src/BVH.jl`, `_seg_blocks_ray`): the blocker
+  segment was tested as an open interval, so a chord crossing exactly at the
+  node shared by two adjoining blocker segments slipped between them. Gauss
+  points on a uniform mesh hit such nodes systematically: a line that should
+  block everything let F = 0.0081 through. The segment is now closed (within
+  `tol`), as the 3-D test already was; a ray that starts or ends on the blocker
+  is still not blocked by it.
+- **Dunavant constants** (`src/ViewFactorKernel.jl`, `src/GPUKernels.jl`): the
+  7-point rule's second weight was `0.132394440720100` instead of
+  `0.132394152788506`, so its weights summed to 0.5 + 4.3e-7; the 13-point rule's
+  second weight was also off, by 2e-10. Both rules are now exact to their degree
+  (5 and 7) to about 1e-15, checked from the moment equations. Results on triangle
+  meshes shift by about 1e-6 relative.
+- **`verbose=true` crash** (`src/Assembly.jl`): `radiating_groups` together with a
+  non-radiating `obstruction_groups` entry threw `KeyError` when printing the
+  obstruction groups, because `restrict_to_radiating` had already trimmed
+  `group_tags`. The CPU path now prints `"tag N"` for such blockers, as does the
+  ray-shooting path (which used to print an empty list).
+
+Documentation brought in line with the code: curve-mesh normal orientation needs
+the surface elements in the `.msh` (a physical surface group or `Mesh.SaveAll`),
+Gmsh's second-order quads are Quad9 unless `Mesh.SecondOrderIncomplete = 1`,
+the 2-D Duffy remark (the kernel is bounded, not divergent, at a shared
+endpoint), the order of the regularised integrand in `theory.md`, and the
+missing `quad4_shape` / `line2_shape` entries in the API reference.
+
 # 2026-09-16
 
 ## Curved `.re2` faces (`load_re2(...; curved=true)`, default on)

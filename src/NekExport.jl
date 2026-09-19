@@ -40,7 +40,7 @@ iw₂ ieg₂ ifc₂ nvwalls₂
 particular enclosure-face numbering — it rebuilds its own `(eg,ifc) → iw`
 map from this file's `ieg`/`ifc` columns at load time). `ieg`/`ifc` are read
 from `SurfaceElement.eg`/`.iface`, so `mesh` must come from
-[`load_re2`](@ref) — an error is raised otherwise.
+[`load_re2`](@ref RadiativeViewFactor.MeshIO.load_re2) — an error is raised otherwise.
 
 Only pairs with `F_elem[i,j] > tol` are written as visible faces per wall,
 matching how Nek5000's hemi-cube view-factor calculator only records

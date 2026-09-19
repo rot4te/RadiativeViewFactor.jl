@@ -381,7 +381,12 @@ end; export nearest_hit_bvh
 Return true if the 2-D line segment v0→v1 blocks the ray xi→xj.
 Only the x and y components are used (z is ignored).
 Uses 2-D line-line intersection via Cramer's rule; both segments are
-parameterised and checked for interior intersection (0 < s,t < 1).
+parameterised (`s` along the ray, `t` along the blocker). The ray must cross
+strictly inside its own extent (`0 < s < 1`, so a ray that starts or ends on
+the blocker's surface is not blocked by it), but the blocker is treated as
+*closed* (`0 ≤ t ≤ 1`, within `tol`), matching the barycentric `_BARY_EPS`
+slack of the 3-D test. An open interval here lets a ray that crosses exactly
+at the shared node of two adjoining blocker segments slip between them.
 """
 @inline function _seg_blocks_ray(xi::SVector{3,Float64}, xj::SVector{3,Float64},
                                   v0::SVector{3,Float64}, v1::SVector{3,Float64};
@@ -393,7 +398,7 @@ parameterised and checked for interior intersection (0 < s,t < 1).
     fx = v0[1]-xi[1];  fy = v0[2]-xi[2]
     s  = (fx*ey - fy*ex) / denom           # parameter along ray
     t  = (fx*dy - fy*dx) / denom           # parameter along segment
-    return tol < s < 1.0-tol && tol < t < 1.0-tol
+    return tol < s < 1.0-tol && -tol <= t <= 1.0+tol
 end
 
 """

@@ -30,7 +30,9 @@ export compute_view_factors,
 """
     compute_view_factors(mesh; nquad=4, obstruction_groups=Int[],
                          radiating_groups=Int[], backend=CPU(),
-                         self_vf=false, facing_cull=true,
+                         self_vf=false, monte_carlo=false, n_samples=5000,
+                         rng=Random.default_rng(), use_duffy=false,
+                         factor=3.0, facing_cull=true,
                          raytrace=false, n_rays=10000, verbose=true)
                          -> ViewFactorResult
 
@@ -39,20 +41,23 @@ Assemble the full view factor matrix at element and physical-group level.
 # Arguments
 - `mesh`                : `MeshData` returned by `load_mesh`
 - `nquad`               : Gauss points per direction; `nquad²` points on each
-                          surface element (`nquad` on each curve element), so
-                          the pair integral costs `nquad⁴` point-pairs per
-                          surface element pair (`nquad²` per curve pair) —
-                          256 point-pairs at the default `nquad=4`. Compare
-                          `n_samples` below, which counts point-pairs directly.
-                          When
+                          quadrilateral element (`nquad` on each curve element),
+                          so the pair integral costs `nquad⁴` point-pairs per
+                          quadrilateral pair (`nquad²` per curve pair) — 256
+                          point-pairs at the default `nquad=4`. Triangles use
+                          a Dunavant rule instead, with 1, 3, 7 or 13 points for
+                          `nquad` = 1, 2, 3 or ≥ 4. Compare `n_samples` below,
+                          which counts point-pairs directly. When
                           `monte_carlo=true`, only used for the adjacent-pair
                           Duffy patch (see `monte_carlo` below), not the bulk
-                          sampling.
+                          sampling. With `raytrace=true`, only used to compute
+                          element areas.
 - `obstruction_groups`  : physical group tags that may occlude rays. Source and
                           destination groups are excluded automatically per pair.
-                          Not applied to the Monte Carlo adjacent-pair patch —
-                          two elements sharing a vertex/edge cannot have a
-                          third surface positioned between them.
+                          Also applied to the Monte Carlo near-pair Duffy patch.
+                          Obstruction geometry is triangulated from element
+                          corner nodes only, so a curved 2nd-order blocker is
+                          treated as flat.
 - `radiating_groups`    : restrict the *radiating* surface to these physical
                           group tags; every other group still obstructs (if
                           listed in `obstruction_groups`) but is not itself
@@ -71,7 +76,9 @@ Assemble the full view factor matrix at element and physical-group level.
                           meaningful**; reciprocity is unaffected. See
                           [`restrict_to_radiating`](@ref).
 - `backend`             : `CPU()` (default), `CUDABackend()`, or `MetalBackend()`
-- `self_vf`             : include self view factors (concave elements). CPU only.
+- `self_vf`             : include self view factors (concave elements). CPU only
+                          — silently ignored on GPU backends — and an error with
+                          `raytrace=true`.
 - `monte_carlo`         : use stratified Monte Carlo area-sampling instead of
                           Gauss–Legendre quadrature for the O(N²) bulk of
                           element pairs — the fastest option for large meshes,
@@ -80,8 +87,9 @@ Assemble the full view factor matrix at element and physical-group level.
                           amount of sampling fixes those; this function
                           therefore always patches those O(N) pairs
                           afterward with the deterministic Duffy transform
-                          (CPU-only, using `nquad` above), on top of
-                          whichever backend the bulk ran on. `use_duffy` has
+                          (using `nquad` above; on the device on a GPU
+                          backend), on top of whichever backend the bulk
+                          ran on. `use_duffy` has
                           no separate effect here — the patch is
                           unconditional whenever `monte_carlo=true`.
 - `n_samples`           : MC sample pairs **per element pair** (default 5000).
@@ -106,15 +114,20 @@ Assemble the full view factor matrix at element and physical-group level.
                           the mesh cannot use. Lower it for a quick look at a
                           large mesh; raise it only if `n_samples` sweeps on
                           your own geometry show the noise still dominates.
-- `rng`                 : RNG for the CPU MC path. Pass a seeded RNG (e.g.
+- `rng`                 : RNG for the CPU Monte Carlo paths (`monte_carlo` and
+                          `raytrace`). Pass a seeded RNG (e.g.
                           `MersenneTwister(42)`) for reproducible results.
-                          Ignored on GPU.
+                          Ignored on GPU, where a fresh random seed is drawn on
+                          each call.
 - `use_duffy`           : apply the Duffy singularity transformation (see
                           `DuffyKernel.jl`) for same-order quad pairs (Quad4
                           or Quad8) sharing a vertex or edge, in the plain
-                          quadrature path. CPU only. Ignored when
+                          quadrature path, on the CPU or (for 3-D meshes) on
+                          a GPU backend, where the touching pairs are
+                          re-evaluated by a device kernel. Has no effect when
                           `monte_carlo=true` (that path always Duffy-patches
-                          adjacent pairs regardless of this flag).
+                          adjacent pairs regardless of this flag) or
+                          `raytrace=true`. Not applicable to curve meshes.
 - `factor`              : near-pair patch radius, in element diameters (see
                           `near_pairs` in `DuffyKernel.jl`) — only used when
                           `monte_carlo=true`, to decide which O(N) pairs get
@@ -136,7 +149,8 @@ Assemble the full view factor matrix at element and physical-group level.
                           obstruct each other automatically (a real
                           behavioural difference from the other two paths,
                           which only apply obstruction for groups explicitly
-                          listed in `obstruction_groups` — see note 3 below);
+                          listed in `obstruction_groups` — see that argument
+                          above);
                           `obstruction_groups` here only adds *extra*,
                           non-radiating blocker geometry to the scene. No
                           adjacent-pair singularity exists for this
@@ -193,7 +207,10 @@ Assemble the full view factor matrix at element and physical-group level.
 - `verbose`             : print progress and row-sum diagnostics
 
 # Returns
-A `ViewFactorResult`.
+A [`ViewFactorResult`](@ref). Its `F_group` is ordered by the sorted group tags in
+`result.group_tags`; with `radiating_groups` set it covers only those groups.
+Curve meshes (`mesh.mesh_dim == 1`) give 2D view factors; they run on the CPU
+only and cannot use `raytrace`.
 
 # Examples
 ```julia
@@ -255,9 +272,6 @@ function compute_view_factors(mesh               ::MeshData;
                            "The enclosure is now open, so row sums will not close to 1.")
     end
 
-    use_duffy && !monte_carlo && !(backend isa CPU) &&
-        @warn "use_duffy is CPU-only; ignored for GPU backends."
-
     if mesh.mesh_dim == 1
         raytrace &&
             error("raytrace does not support curve meshes (mesh_dim=1) yet. " *
@@ -273,7 +287,7 @@ function compute_view_factors(mesh               ::MeshData;
         return _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                                   obstruction_groups, verbose,
                                   monte_carlo, n_samples, factor, facing_cull,
-                                  raytrace, n_rays)
+                                  raytrace, n_rays, use_duffy)
     end
 
     raytrace &&
@@ -369,9 +383,11 @@ function _compute_cpu(mesh              ::MeshData,
             println("CPU compute_view_factors: $N elements, nquad=$nquad")
         end
     end
+    # After `radiating_groups` restriction `mesh.group_tags` only holds the
+    # radiating groups, so a non-radiating blocker's name is not available here.
     check_obs && verbose &&
         println("  Obstruction groups: ",
-                [mesh.group_tags[g] for g in obstruction_groups])
+                [get(mesh.group_tags, g, "tag $g") for g in obstruction_groups])
 
     raw_integral = zeros(Float64, N, N)
     A_elem       = zeros(Float64, N)
@@ -516,7 +532,7 @@ function _compute_cpu_raytrace(mesh              ::MeshData,
         extra = [g for g in obstruction_groups if g ∉ radiating_groups]
         isempty(extra) ||
             println("  Extra (non-radiating) blocker groups: ",
-                    [mesh.group_tags[g] for g in extra if haskey(mesh.group_tags, g)])
+                    [get(mesh.group_tags, g, "tag $g") for g in extra])
     end
 
     # One BVH over the whole radiating mesh (self-obstructing by
@@ -605,7 +621,7 @@ const _GPU_HOOK_REF = Ref{Any}(nothing)
 
 function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                             obstruction_groups, verbose, monte_carlo, n_samples,
-                            factor, facing_cull, raytrace, n_rays)
+                            factor, facing_cull, raytrace, n_rays, use_duffy)
     _GPU_HOOK_REF[] === nothing &&
         error("GPU compute hook not registered. Ensure GPUAssembly is loaded.")
     return _GPU_HOOK_REF[](mesh, nquad, backend, FloatT, ArrayT;
@@ -616,7 +632,8 @@ function _gpu_compute_hook(mesh, nquad, backend, FloatT, ArrayT,
                              factor=factor,
                              facing_cull=facing_cull,
                              raytrace=raytrace,
-                             n_rays=n_rays)
+                             n_rays=n_rays,
+                             use_duffy=use_duffy)
 end
 
 """

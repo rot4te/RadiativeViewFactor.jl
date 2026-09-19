@@ -80,7 +80,7 @@ import ..MeshIO:      SurfaceElement
 import ..ViewFactorKernel: element_pair_view_factor, precompute_quad
 
 export element_pair_view_factor_duffy, singularity_type,
-       near_pairs, patch_adjacent_pairs_duffy!
+       near_pairs, touching_pairs, patch_adjacent_pairs_duffy!
 
 # ---------------------------------------------------------------------------
 # Singularity classification
@@ -384,8 +384,8 @@ Compute the raw double integral ∬K dAⱼ dAᵢ using the appropriate method:
 - COMMON_VERTEX: 4-region "biggest-coordinate" Duffy decomposition
 - COMMON_EDGE:   6-region "biggest-coordinate" Duffy decomposition
 
-This is an elementary generalization of Duffy's original single-simplex
-transform (see the module comment above), not the specific region formulas
+This is an elementary generalization of Duffy's original vertex-singularity
+transformation (see the module comment above), not the specific region formulas
 of Sauter & Schwab's boundary element method.
 
 The Duffy singular treatment applies to same-order quad pairs — both Quad4
@@ -509,6 +509,38 @@ function near_pairs(coords::Matrix{Float64}, elems::Vector{SurfaceElement};
         end
     end
     return collect(pairs)
+end
+
+"""
+    touching_pairs(elems) -> Vector{Tuple{Int,Int}}
+
+All index pairs `(i,j)`, `i<j`, of same-family quads (both Quad4 or both Quad8)
+that share at least one corner node — exactly the pairs for which
+[`singularity_type`](@ref) is not `NONE`, and therefore the only ones on which
+`element_pair_view_factor_duffy` differs from plain quadrature. Found from a
+corner-node → elements table, so the cost is linear in the element count (times
+the small vertex valence), and returned sorted for reproducibility. The GPU
+quadrature path uses this list to know which pairs to hand to the device Duffy
+kernel.
+"""
+function touching_pairs(elems::Vector{SurfaceElement})::Vector{Tuple{Int,Int}}
+    at_corner = Dict{Int,Vector{Int}}()
+    for (e, el) in enumerate(elems)
+        (el.family === :quad || el.family === :quad4) || continue
+        for c in 1:4
+            push!(get!(at_corner, el.nodes[c], Int[]), e)
+        end
+    end
+    pairs = Set{Tuple{Int,Int}}()
+    for list in values(at_corner)
+        for a in 1:length(list)-1, b in a+1:length(list)
+            i, j = list[a], list[b]
+            i == j && continue
+            elems[i].family === elems[j].family || continue
+            push!(pairs, (min(i, j), max(i, j)))
+        end
+    end
+    return sort!(collect(pairs))
 end
 
 """

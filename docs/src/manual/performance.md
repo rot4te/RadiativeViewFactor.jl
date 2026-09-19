@@ -41,6 +41,7 @@ element pair. Increase `nquad` when:
 A convergence study is the most reliable guide:
 
 ```julia
+using Printf
 for n in [2, 4, 6, 8, 12]
     result = compute_view_factors(mesh; nquad=n, verbose=false)
     i = findfirst(==("emitter"),  result.group_names)
@@ -51,20 +52,26 @@ end
 
 ## Choosing `n_samples` for Monte Carlo
 
-The MC standard error scales as σ/√N where σ is the per-pair standard
-deviation. For smooth geometries σ is small and `n_samples=10000` gives ~1%
-relative error. For geometries with many obstructions or near-singular pairs,
-σ is larger and `n_samples=100000` or more may be needed.
+`n_samples` counts sample pairs **per element pair** (default 5000). The
+Monte Carlo standard error scales as σ/√N, where σ is the per-pair standard
+deviation, so quadrupling `n_samples` halves the noise.
 
-A rough guide for the parallel-plates benchmark (well-separated, no
-obstructions):
+The default of 5000 is the value used throughout `benchmarks/howell/`: across
+115 Howell catalog points it landed 110 (96%) within 1% of the published value,
+with a median error of 0.008%. At that sample count the estimator's own noise is
+typically 10–1000× smaller than the mesh's discretization error against the
+analytic answer, so raising it further mostly buys accuracy the mesh cannot use.
+Lower it for a quick look at a large mesh; raise it only if an `n_samples`
+sweep on your own geometry shows the noise still dominating. Geometries with
+many obstructions or near-singular pairs have a larger σ and may need more.
 
-| `n_samples` | Approximate error |
-|---|---|
-| 1000   | ~10% |
-| 10000  | ~1%  |
-| 100000 | ~0.3% |
-| 1000000 | ~0.1% |
+Pairs that share a vertex or edge, or sit close to each other, are not left to
+the samples: they are patched with a deterministic value at `nquad` — the Duffy
+integral for touching quads, plain quadrature for merely close pairs — within
+`factor` element diameters (default 3.0). The CPU skips them in the sampling
+loop; on a GPU a second kernel overwrites them afterwards. Raising `factor` does not by
+itself make those pairs more accurate — `nquad` is the more effective lever
+for closure error on meshes with large or elongated elements.
 
 ## Ray-shooting Monte Carlo (`raytrace=true`)
 
@@ -72,9 +79,11 @@ For large or obstructed 3D meshes, `raytrace=true` is usually the fastest
 option: on a 72-point subset of the Howell catalog benchmark it was 2.9×
 faster than quadrature and 26.4× faster than pair-area Monte Carlo at
 `n_samples=5000` (see `benchmarks/howell/RESULTS.md`). It scales as
-O(N · n_rays · log N) rather than O(N²), and — unlike pair-area Monte Carlo —
-does not need a separate obstruction check per pair, since every radiating
-element is already part of the one scene BVH each ray is cast against.
+O(N · n_rays · log N) rather than O(N²) in time, and — unlike pair-area Monte
+Carlo — does not need a separate obstruction check per pair, since every
+radiating element is already part of the one scene BVH each ray is cast
+against. It is less accurate on that subset (median error 0.18% at
+`n_rays=10000`, versus 0.005–0.008% for the other two on the full suite).
 
 `n_rays` (default 10000) counts rays **per element**, not per element pair,
 so it is not directly comparable to `n_samples` — tune it per case. Increase
@@ -89,8 +98,29 @@ the mesh instead.
 
 For inclined-plate geometries with a shared edge, `use_duffy=true` with
 `nquad=4` typically outperforms `use_duffy=false` with `nquad=16` in both
-accuracy and runtime. The Duffy path evaluates `5 × nquad⁴` points per shared
-edge — with `nquad=4` that is 1280 per pair vs 65536 for `nquad=16` standard.
+accuracy and runtime. The Duffy path evaluates `6 × nquad⁴` points per shared
+edge (`4 × nquad⁴` per shared vertex) — with `nquad=4` that is 1536 per pair vs
+65536 for `nquad=16` standard.
+
+## Skipping work nobody asked for
+
+Two options cut the number of element pairs that are actually integrated, and
+neither changes the answer:
+
+- **`facing_cull=true`** (the default) gives each element a conservative bound on
+  its points and another on its normals (O(N)), and skips any pair whose kernel
+  is provably zero at every point pair in O(1) — instead of discovering the zero
+  one quadrature point, Monte Carlo sample, or BVH ray cast at a time. On closed
+  convex bodies (tube bundles, pebble beds) most pairs face away from each other,
+  so this is a large saving; the assembled matrix is bitwise identical with it on
+  or off. On CPU, `verbose=true` reports how many pairs were skipped. It does
+  not apply to `raytrace=true`.
+- **`radiating_groups=[...]`** restricts the radiating set while every group
+  still obstructs, turning an `O(N_total²)` problem into `O(N_radiating²)`. If
+  you only need the view factors between a few surfaces in a mesh full of
+  shadowing bodies, this is by far the larger saving (see
+  [Obstruction Detection](@ref)). The enclosure is then open, so row sums do not
+  close to 1.
 
 ## Threading
 
@@ -103,15 +133,18 @@ julia --threads=8 script.jl
 JULIA_NUM_THREADS=8 julia script.jl
 ```
 
-For Monte Carlo, one independent RNG is pre-generated per row (seeded from the
-`rng` you pass), so results are reproducible and free of lock contention
-regardless of how Julia schedules the threads.
+For both Monte Carlo methods, one independent RNG is pre-generated per row
+(seeded from the `rng` you pass), so results are reproducible and free of lock
+contention regardless of how Julia schedules the threads.
 
 ## Memory
 
 The `F_elem` matrix is dense with N² Float64 values. For N = 1000 elements
-this is ~8 MB; for N = 10000 it is ~800 MB. If memory is a concern, consider
-aggregating to group level and discarding `F_elem`:
+this is ~8 MB; for N = 10000 it is ~800 MB; for N ≈ 49000 it is ~19 GB. The
+ray-shooting path builds `F_elem` in place, so its peak is a single N × N matrix
+rather than several. If memory is a concern, restrict the radiating set with
+`radiating_groups`, or consider aggregating to group level and discarding
+`F_elem`:
 
 ```julia
 result   = compute_view_factors(mesh; nquad=4)
@@ -127,7 +160,6 @@ cost at the start of `compute_view_factors`. For very large meshes the BVH
 (if used) is also transferred once. These costs are amortised over the
 N(N-1)/2 element pair computations that follow.
 
-For repeated computations on the same mesh (e.g. parameter sweeps), consider
-keeping the mesh data resident on the device. This requires lower-level access
-to `build_gpu_arrays` from `GPUKernels` — contact the package author for
-guidance.
+`compute_view_factors` re-transfers the mesh on every call; there is no public
+API for keeping mesh data resident on the device across calls. The internal
+`GPUKernels.build_gpu_arrays` is what builds the device arrays.

@@ -39,7 +39,7 @@ const ELEM_INFO = Dict{Int, NamedTuple}(
 `eg` and `iface` are the Nek5000/NekRS global element number and local face
 index (1-6) this element corresponds to, populated by [`load_re2`](@ref) so
 that per-element view factors can be written back out in Nek's own
-`(element, face)` bookkeeping (see [`write_nekrs_view_factors`](@ref)). They
+`(element, face)` bookkeeping (see [`write_nekrs_view_factors`](@ref RadiativeViewFactor.NekExport.write_nekrs_view_factors)). They
 default to `0` for elements loaded from any other mesh format, where the
 concept doesn't apply.
 
@@ -93,7 +93,7 @@ struct MeshData
 end; export MeshData
 
 """
-    load_mesh(filename; surface_dim=2, verbose=true) -> MeshData
+    load_mesh(filename; surface_dim=2, reverse_normals=false, verbose=true) -> MeshData
 
 Load a mesh and extract all supported 1st- or 2nd-order elements belonging to
 named physical groups.
@@ -110,6 +110,15 @@ Supported element families (any mix in one mesh):
 `surface_dim=2` (default) — surface mesh, 3D view factors.
 `surface_dim=1`            — planar curve mesh, 2D view factors.
 
+`reverse_normals=true` flips every element's normal at load time (for a surface
+mesh wound back-to-front). For curve meshes it is applied *after* the automatic
+orientation described below. To flip only some groups, use
+[`reverse_group_normals`](@ref) on the loaded mesh instead.
+
+For curve meshes read through Gmsh, each element's normal is oriented toward the
+interior of the adjacent surface, found from mesh connectivity (see the Mesh
+Requirements page). Surface-mesh normals follow node winding as written.
+
 Named physical groups are used to partition the radiating surfaces. Formats
 that cannot carry physical groups (e.g. STL) have no named groups; in that case
 a single synthetic group named `"default"` covering every entity of
@@ -122,8 +131,9 @@ the Gmsh importer. See [`load_vtu`](@ref) for VTK-specific options.
 
 Nek5000/NekRS `.re2` binary meshes are detected by extension and read by a
 dedicated in-tree parser (Gmsh cannot open them). The 3D hex volume mesh's
-boundary faces become radiating Quad4 surfaces grouped by Nek boundary-condition
-label. See [`load_re2`](@ref).
+boundary faces become radiating surfaces (Quad8 when the file carries curved-side
+records, else Quad4) grouped by Nek boundary-condition label. See
+[`load_re2`](@ref).
 """
 function load_mesh(filename::AbstractString;
                    surface_dim    ::Int  = 2,
@@ -221,7 +231,12 @@ VTK has no native concept of physical groups. If `group_field` names a
 per-cell integer data array it is used to partition elements into groups;
 otherwise (or if the named array is absent) a single `"default"` group is
 created. Common region arrays (`CellEntityIds`, `gmsh:physical`, `RegionId`,
-`MaterialIds`) are tried automatically when `group_field === nothing`.
+`MaterialIds`, `region`, `group`) are tried automatically when
+`group_field === nothing`. Groups found this way are named `"group_<value>"`.
+
+Unlike the Gmsh path, no automatic normal orientation is applied to curve meshes
+(a warning is issued): normals follow node winding, so use `reverse_normals` if
+they come out backwards. Cells of a type not listed below are skipped.
 
 Cell types are mapped to element families as:
 Line(3)→line2, QuadraticEdge(21)→line3, Triangle(5)→tri3,
@@ -935,7 +950,7 @@ the case's `.usr` file, not something this loader can determine from `.re2`
 labels alone. Each element's Nek global element number and local face index
 (1-6) are recorded in `SurfaceElement.eg`/`.iface` for round-tripping view
 factors back into Nek5000's `(element, face)` bookkeeping — see
-[`write_nekrs_view_factors`](@ref). Word size (4- or 8-byte reals) and byte
+[`write_nekrs_view_factors`](@ref RadiativeViewFactor.NekExport.write_nekrs_view_factors). Word size (4- or 8-byte reals) and byte
 order are auto-detected. Only `surface_dim=2` (3D → surfaces) is supported.
 
 # Curvature (`curved`)
@@ -1288,7 +1303,7 @@ radiating groups and renumbered to the new element indices.
 
 !!! warning "Row sums no longer close"
     View factors are still correct individually, but the enclosure is
-    deliberately incomplete, so `Σⱼ Fᵢⱼ < 1` and [`check_closure`](@ref) is not
+    deliberately incomplete, so `Σⱼ Fᵢⱼ < 1` and [`check_closure`](@ref RadiativeViewFactor.Results.check_closure) is not
     meaningful on the result. Reciprocity is unaffected and still holds.
 
 ```julia

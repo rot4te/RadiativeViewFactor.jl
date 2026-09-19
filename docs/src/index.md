@@ -3,7 +3,8 @@
 A Julia package for computing **radiative view factors** between arbitrary surfaces
 or curves. Meshes may be **structured or unstructured** and **1st- or 2nd-order**;
 any [Gmsh](https://gmsh.info/)-readable format is supported, plus XML VTK (`.vtu`)
-via an optional ReadVTK.jl extension.
+via an optional ReadVTK.jl extension and Nek5000/NekRS `.re2` meshes through a
+built-in reader.
 
 ## Overview
 
@@ -16,8 +17,8 @@ may be mixed freely. Four integration strategies are available:
 - **Gauss–Legendre quadrature** — the default; spectral convergence for smooth
   geometries
 - **Monte Carlo (pair-area sampling)** — stratified sampling of point pairs on
-  each element pair; advantageous when many obstructions are present or
-  near-singular pairs exist
+  each element pair; adjacent and near pairs are patched with the Duffy
+  transformation automatically
 - **Duffy transformation** — singularity-regularizing change of variables for
   Quad4/Quad8 element pairs sharing a vertex or edge; gives accurate results
   for inclined surfaces with common edges
@@ -25,9 +26,22 @@ may be mixed freely. Four integration strategies are available:
   into the whole scene at once; the fastest method for large or obstructed 3D
   meshes, since obstruction and visibility fall out of the same BVH query
 
-Quadrature, pair-area Monte Carlo, and Duffy support **obstruction detection**
-via BVH-accelerated ray casting, and all four methods work on CPU; quadrature,
-both Monte Carlo variants, and obstruction work on GPU too (Duffy is CPU-only).
+All four methods run on CPU and support **obstruction detection** via
+BVH-accelerated ray casting. Quadrature, both Monte Carlo variants, and
+obstruction also run on GPU (CUDA and Metal), and so does the Duffy
+transformation, for 3-D surface meshes.
+
+Beyond the integrators, the package can:
+
+- restrict the radiating surface to a subset of groups while every group still
+  shadows (`radiating_groups`), which cuts the cost from `O(N_total²)` to
+  `O(N_radiating²)`
+- skip element pairs that provably cannot see each other (`facing_cull`,
+  on by default)
+- check reciprocity and closure of a result, and enforce both on a closed
+  enclosure (`enforce_closure`)
+- write view factors for a Nek5000/NekRS surface-to-surface radiation case
+  (`write_nekrs_view_factors`)
 
 ## Installation
 
@@ -35,6 +49,8 @@ both Monte Carlo variants, and obstruction work on GPU too (Duffy is CPU-only).
 using Pkg
 Pkg.add(url="https://github.com/rot4te/RadiativeViewFactor.jl")
 ```
+
+Requires Julia 1.10 or later.
 
 For GPU support, install the relevant backend before loading the package:
 
@@ -85,6 +101,7 @@ Pages = [
     "theory.md",
     "api.md",
     "references.md",
+    "citing.md",
 ]
 Depth = 2
 ```

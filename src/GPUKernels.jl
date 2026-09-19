@@ -40,7 +40,7 @@ using StaticArrays
 using LinearAlgebra: cross, dot
 
 import ..GPUBVH: gpu_intersect_bvh, FlatBVH
-import ..Quadrature: gauss_legendre_2d
+import ..Quadrature: gauss_legendre_2d, gauss_legendre_1d
 import ..ElementBounds: build_element_bounds
 
 export build_gpu_arrays, launch_vf_kernel!, gpu_pair_can_see
@@ -232,38 +232,30 @@ end
     return x, c/dA, dA
 end
 
-@kernel function _vf_pair_kernel!(raw_out, area_out,
-                                   coords,
-                                   nodes_quad, nodes_tri,
-                                   elem_family, elem_node_idx,
-                                   elem_group,
-                                   quad_pts, quad_wts,
-                                   tri_pts,  tri_wts,
-                                   N,
+# ---------------------------------------------------------------------------
+# Plain tensor-product quadrature of one element pair, shared by the all-pairs
+# kernel below and the pair-list kernel in GPUDuffyKernels.jl (which re-evaluates
+# the near/touching pairs). Returns (Fij, Ai, Aj): the raw double integral and
+# both element areas. The areas are always computed; the integral only when
+# `do_integral` is true (the facing cull can prove it zero).
+#
+# fi/fj are the family codes (0=quad8, 1=tri6, 2=quad4, 3=tri3) and ni_idx /
+# nj_idx the columns of nodes_quad / nodes_tri, as laid out in build_gpu_arrays.
+# ---------------------------------------------------------------------------
+@inline function _pair_quadrature(coords, nodes_quad, nodes_tri,
+                                   fi, fj, ni_idx, nj_idx,
+                                   gi::Int32, gj::Int32,
+                                   quad_pts, quad_wts, tri_pts, tri_wts,
                                    bvh_lo, bvh_hi, bvh_meta,
                                    bvh_tri_idx, bvh_tris, bvh_tri_group,
-                                   use_bvh::Bool,
-                                   elem_blo, elem_bhi, elem_nlo, elem_nhi,
-                                   facing_cull::Bool)
-    i, j = @index(Global, NTuple)
-
-    if i <= N && j <= N && i < j
-
+                                   use_bvh::Bool, do_integral::Bool)
     T   = eltype(coords)
     nq  = length(quad_wts)
     nqt = length(tri_wts)
 
-    gi = Int32(elem_group[i])
-    gj = Int32(elem_group[j])
-
     Fij = zero(T)
     Ai  = zero(T)
     Aj  = zero(T)
-
-    fi     = elem_family[i]
-    fj     = elem_family[j]
-    ni_idx = elem_node_idx[i]
-    nj_idx = elem_node_idx[j]
 
     # ---- compute element areas independently ----
     for p in 1:((fi == 0 || fi == 2) ? nq : nqt)
@@ -298,13 +290,6 @@ end
         end
         Aj += wj * dAj
     end
-
-    # ---- conservative facing test ----
-    # Skips only the integral, never the area writes below: an element whose
-    # every pair is rejected would otherwise never have its area written, and
-    # the 0/0 in the row normalisation would silently produce NaN.
-    do_integral = !facing_cull ||
-        gpu_pair_can_see(elem_blo, elem_bhi, elem_nlo, elem_nhi, i, j)
 
     # ---- double quadrature loop for view factor integral ----
     if do_integral
@@ -372,6 +357,44 @@ end
         Fij += wi * inner * dAi
     end
     end # if do_integral
+
+    return Fij, Ai, Aj
+end
+
+@kernel function _vf_pair_kernel!(raw_out, area_out,
+                                   coords,
+                                   nodes_quad, nodes_tri,
+                                   elem_family, elem_node_idx,
+                                   elem_group,
+                                   quad_pts, quad_wts,
+                                   tri_pts,  tri_wts,
+                                   N,
+                                   bvh_lo, bvh_hi, bvh_meta,
+                                   bvh_tri_idx, bvh_tris, bvh_tri_group,
+                                   use_bvh::Bool,
+                                   elem_blo, elem_bhi, elem_nlo, elem_nhi,
+                                   facing_cull::Bool)
+    i, j = @index(Global, NTuple)
+
+    if i <= N && j <= N && i < j
+
+    gi = Int32(elem_group[i])
+    gj = Int32(elem_group[j])
+
+    # ---- conservative facing test ----
+    # Skips only the integral, never the area writes below: an element whose
+    # every pair is rejected would otherwise never have its area written, and
+    # the 0/0 in the row normalisation would silently produce NaN.
+    do_integral = !facing_cull ||
+        gpu_pair_can_see(elem_blo, elem_bhi, elem_nlo, elem_nhi, i, j)
+
+    Fij, Ai, Aj = _pair_quadrature(coords, nodes_quad, nodes_tri,
+                                    elem_family[i], elem_family[j],
+                                    elem_node_idx[i], elem_node_idx[j], gi, gj,
+                                    quad_pts, quad_wts, tri_pts, tri_wts,
+                                    bvh_lo, bvh_hi, bvh_meta,
+                                    bvh_tri_idx, bvh_tris, bvh_tri_group,
+                                    use_bvh, do_integral)
 
     raw_out[i, j] = Fij
     raw_out[j, i] = Fij
@@ -445,6 +468,12 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
     quad_pts_cpu = FloatT.(gl_rule.points)
     quad_wts_cpu = FloatT.(gl_rule.weights)
 
+    # 1-D Gauss-Legendre rule on [0,1], for the Duffy-transformed integrals
+    # (GPUDuffyKernels.jl), whose regions are unit hypercubes.
+    gl1_pts, gl1_wts = gauss_legendre_1d(nquad)
+    gl_pts01_cpu = FloatT.((gl1_pts .+ 1) ./ 2)
+    gl_wts01_cpu = FloatT.(gl1_wts ./ 2)
+
     # Dunavant triangle rule (reuse logic from ViewFactorKernel)
     tri_rule = _dunavant_rule(nquad, FloatT)
 
@@ -467,6 +496,8 @@ function build_gpu_arrays(mesh, nquad::Int, ArrayT, FloatT)
         quad_wts      = ArrayT(quad_wts_cpu),
         tri_pts       = ArrayT(tri_rule.points),
         tri_wts       = ArrayT(tri_rule.weights),
+        gl_pts01      = ArrayT(gl_pts01_cpu),
+        gl_wts01      = ArrayT(gl_wts01_cpu),
         N             = N,
         FloatT        = FloatT,
     )
@@ -483,16 +514,16 @@ function _dunavant_rule(nquad::Int, ::Type{T}) where T
         a1=T(0.101286507323456); b1=1-2a1
         a2=T(0.470142064105115); b2=1-2a2
         pts = T[a1 b1 a1 a2 b2 a2 1/3; a1 a1 b1 a2 a2 b2 1/3]
-        w1=T(0.125939180544827/2); w2=T(0.132394440720100/2); w3=T(0.225/2)
+        w1=T(0.125939180544827/2); w2=T(0.132394152788506/2); w3=T(0.225/2)
         return (points=pts, weights=T[w1,w1,w1,w2,w2,w2,w3])
     else
-        a1=T(0.0651301029022); b1=1-2a1               # β2  (α2=0.86973979)
-        a2=T(0.2603459660790); b2=1-2a2               # β1  (α1=0.47930807)
-        a3=T(0.0486903154254); b3=T(0.6384441885698); c3=1-a3-b3   # general orbit
+        a1=T(0.065130102902216); b1=1-2a1               # β2  (α2=0.86973979)
+        a2=T(0.260345966079040); b2=1-2a2               # β1  (α1=0.47930807)
+        a3=T(0.048690315425316); b3=T(0.638444188569810); c3=1-a3-b3   # general orbit
         pts = T[a1 b1 a1 a2 b2 a2 a3 b3 c3 a3 b3 c3 1/3;
                 a1 a1 b1 a2 a2 b2 b3 a3 a3 c3 c3 b3 1/3]
-        w1=T(0.0533472356088/2); w2=T(0.1756152576332/2)
-        w3=T(0.0771137608903/2); w4=T(-0.1495700444677/2)   # centroid weight is negative
+        w1=T(0.053347235608839/2); w2=T(0.175615257433208/2)
+        w3=T(0.077113760890257/2); w4=T(-0.149570044467682/2)   # centroid weight is negative
         return (points=pts, weights=T[w1,w1,w1,w2,w2,w2,w3,w3,w3,w3,w3,w3,w4])
     end
 end
