@@ -384,8 +384,8 @@ Compute the raw double integral ∬K dAⱼ dAᵢ using the appropriate method:
 - COMMON_VERTEX: 4-region "biggest-coordinate" Duffy decomposition
 - COMMON_EDGE:   6-region "biggest-coordinate" Duffy decomposition
 
-This is an elementary generalization of Duffy's original single-simplex
-transform (see the module comment above), not the specific region formulas
+This is an elementary generalization of Duffy's original vertex-singularity
+transformation (see the module comment above), not the specific region formulas
 of Sauter & Schwab's boundary element method.
 
 The Duffy singular treatment applies to same-order quad pairs — both Quad4

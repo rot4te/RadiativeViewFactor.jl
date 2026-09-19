@@ -80,8 +80,8 @@ K \sim \frac{1}{r^2}, \quad r \sim \sqrt{(u-u_0)^2+(v-v_0)^2+(s-s_0)^2+(t-t_0)^2
 ```
 
 The implementation uses an elementary "biggest-coordinate" Duffy
-decomposition (a generalization of Duffy's original single-simplex
-transform), not the specific region formulas of Sauter & Schwab's boundary
+decomposition (a generalization of Duffy's original vertex-singularity
+transformation), not the specific region formulas of Sauter & Schwab's boundary
 element method — a related but different decomposition of the same
 singularity, and still the reference for the underlying idea.
 

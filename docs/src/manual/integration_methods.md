@@ -44,8 +44,8 @@ Singularity type is detected automatically:
 - **Two shared corner nodes (one edge)** → 6-region decomposition (the shared
   edge split into two triangles, each further split 3 ways)
 
-This is an elementary generalization of Duffy's original single-simplex
-transform, not the specific region formulas from Sauter & Schwab's boundary
+This is an elementary generalization of Duffy's original vertex-singularity
+transformation, not the specific region formulas from Sauter & Schwab's boundary
 element method (a related but different decomposition of the same
 singularity) — see [Theory](@ref) for the exact construction.
 
