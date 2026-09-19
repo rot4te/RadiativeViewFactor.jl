@@ -7,6 +7,9 @@ The following works informed the numerical methods implemented in this package.
 - Howell, J. R., Mengüç, M. P., & Siegel, R. (2020). *Thermal Radiation Heat Transfer* (7th ed.). CRC Press.
   — View factor definitions, reciprocity relation, crossed-string method for 2D geometries, and analytical reference cases used for validation.
 
+- Howell, J. R. *A Catalog of Radiation Heat Transfer Configuration Factors* (3rd ed.). <https://www.thermalradiation.net>
+  — Section C (finite area to finite area) provides the published reference values used by the validation suite in `benchmarks/howell/`.
+
 - Hamilton, D. C., & Morgan, W. R. (1952). *Radiant interchange configuration factors*. NACA Technical Note 2836.
   — Original tabulation of configuration factor formulae for standard geometries.
 
@@ -29,7 +32,7 @@ The following works informed the numerical methods implemented in this package.
   — Golub–Welsch tridiagonal eigenvalue algorithm used in `Quadrature.jl` to generate n-point Gauss–Legendre rules for n > 5.
 
 - Dunavant, D. A. (1985). High degree efficient symmetrical Gaussian quadrature rules for the triangle. *International Journal for Numerical Methods in Engineering*, 21(6), 1129–1148.
-  — Dunavant triangle quadrature rules used for Tri6 surface elements.
+  — Dunavant triangle quadrature rules used for Tri3 and Tri6 surface elements (1, 3, 7, or 13 points).
 
 ## Ray–triangle intersection
 
@@ -49,10 +52,13 @@ The following works informed the numerical methods implemented in this package.
 - Cohen, M. F., & Wallace, J. R. (1995). *Radiosity and Realistic Image Synthesis*. Academic Press.
   — Source for the solid-angle identity ``dA_j \cos\theta_j / r^2 = d\Omega`` underlying the cosine-weighted ray-shooting estimator in `RayTraceKernel.jl` and `GPURayTraceKernels.jl`.
 
+- Duff, T., Burgess, J., Christensen, P., Hery, C., Kensler, A., Liani, M., & Villemin, R. (2017). Building an orthonormal basis, revisited. *Journal of Computer Graphics Techniques*.
+  — Branchless orthonormal-basis construction used to turn a surface normal into the frame for cosine-weighted hemisphere sampling in `RayTraceKernel.jl` and `GPURayTraceKernels.jl`.
+
 ## GPU pseudo-random number generation
 
 - Marsaglia, G. (2003). Xorshift RNGs. *Journal of Statistical Software*, 8(14).
-  — xorshift64 PRNG used in `GPUMCKernels.jl` for per-thread random streams with no heap allocation.
+  — 32-bit xorshift generator used in the sampling hot loop of `GPUMCKernels.jl` (and reused by `GPURayTraceKernels.jl`) for per-thread random streams with no heap allocation.
 
 - Steele, G. L., Lea, D., & Flood, C. H. (2014). Fast splittable pseudorandom number generators. *ACM SIGPLAN Notices*, 49(10), 453–472.
   — splitmix64 mixing function used to derive independent per-thread seeds from the global seed and thread index.

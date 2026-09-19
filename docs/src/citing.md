@@ -12,7 +12,7 @@ generates formatted citations automatically from the `CITATION.cff` file.
   author  = {Coxe, Alexander M.},
   title   = {{RadiativeViewFactor.jl}},
   url     = {https://github.com/rot4te/RadiativeViewFactor.jl},
-  version = {0.6.3},
+  version = {0.6.4},
   year    = {2026}
 }
 ```

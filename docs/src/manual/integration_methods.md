@@ -11,8 +11,10 @@ result = compute_view_factors(mesh; nquad=4)
 ```
 
 The double surface integral is evaluated at a tensor product of `nquad` ×
-`nquad` Gauss–Legendre points on each element pair. This is the default method
-and is appropriate for most geometries.
+`nquad` Gauss–Legendre points on each quadrilateral element (`nquad` points on
+each curve element). This is the default method and is appropriate for most
+geometries. Triangles (Tri3 and Tri6) use a Dunavant rule instead, with 1, 3, 7
+or 13 points for `nquad` = 1, 2, 3 or ≥ 4.
 
 **Convergence:** spectral — errors decrease as O(exp(-c·nquad)) for smooth
 integrands. A good starting point is `nquad=4` — that is `nquad²` = 16 points
@@ -49,11 +51,11 @@ singularity) — see [Theory](@ref) for the exact construction.
 
 **Constraints:**
 - CPU only (`use_duffy` is ignored on GPU backends with a warning)
-- Quad4–Quad4 and Quad8–Quad8 pairs only; Tri6 and Line3 pairs always use
-  standard quadrature
-- Incompatible with `monte_carlo=true` (but see the note below — the
-  pair-area Monte Carlo path always applies this same Duffy patch to
-  near/touching pairs regardless of `use_duffy`)
+- Quad4–Quad4 and Quad8–Quad8 pairs only; triangle, curve, and mixed
+  Quad4/Quad8 pairs always use standard quadrature
+- Has no effect with `monte_carlo=true` (the pair-area Monte Carlo path always
+  applies this same Duffy patch to near/touching pairs regardless of
+  `use_duffy`) or with `raytrace=true` (which never evaluates `1/r²`)
 - Not applicable for `surface_dim=1` (the 2D `1/r` singularity at shared
   endpoints is physically divergent and cannot be regularized)
 
@@ -63,9 +65,15 @@ Duffy path, the overhead depends on mesh topology. A lower `nquad` (e.g. 4)
 with `use_duffy=true` typically outperforms a higher `nquad` (e.g. 16) with
 standard quadrature for inclined-plate geometries.
 
-`.re2` meshes are always Quad4, so `use_duffy=true` is recommended whenever a
-structured hex-mesh boundary has many edge-adjacent Quad4 pairs — plain
-quadrature overestimates their view factor.
+`.re2` meshes are all-Quad4 or, with curved faces (the default when the file
+carries curved-side records), all-Quad8, so the Duffy path applies to every
+pair. `use_duffy=true` is recommended whenever a structured hex-mesh boundary
+has many edge-adjacent quad pairs — plain quadrature overestimates their view
+factor. On the repository's `test/tall_cavity.re2` (2400 elongated Quad4 faces)
+the largest element row sum is 2.11 with plain quadrature at `nquad=4`, 1.33
+with `use_duffy=true` at `nquad=4`, and 1.11 with `use_duffy=true` at
+`nquad=6`; it should be 1 for that closed enclosure, so raise `nquad` on
+elongated elements (and see [`enforce_closure`](@ref)).
 
 ## Monte Carlo (pair-area sampling)
 
@@ -118,13 +126,16 @@ result = compute_view_factors(mesh; monte_carlo=true, n_samples=50000,
                                rng=MersenneTwister(42))
 ```
 
-**GPU:** each thread uses an independent xorshift64 pseudo-random stream seeded
-from the global seed plus the thread index. The `rng` keyword is ignored on GPU;
-a random global seed is generated on the host at each call.
+**GPU:** each thread (one per element pair) seeds an independent stream from
+the global seed plus its index with splitmix64, then draws from a fast 32-bit
+xorshift generator. The `rng` keyword is ignored on GPU; a random global seed is
+generated on the host at each call, so GPU runs are not reproducible. See
+[GPU Backends](@ref).
 
 **Constraints:**
 - `n_samples` applies **per element pair**, not to the whole geometry
-- Incompatible with `use_duffy=true`
+- `use_duffy` has no separate effect (the near-pair patch is unconditional)
+- Incompatible with `raytrace=true`
 
 ## Monte Carlo (ray-shooting)
 
@@ -150,6 +161,9 @@ sums on a closed enclosure are only approximately 1 (ordinary MC noise,
 shrinking with `n_rays`) rather than exact — every off-diagonal entry blends
 in the *other* element's independent estimate too.
 
+Element areas (`A_elem`) are computed by quadrature (`nquad`), not estimated
+from the rays.
+
 Runs on CPU or GPU (its own kernel, one thread per *element* on GPU, not per
 pair):
 
@@ -167,6 +181,16 @@ result = compute_view_factors(mesh; raytrace=true, n_rays=10000,
 - `n_rays` counts rays **per element**, not per element pair, so it is not
   directly comparable to `n_samples`; tune per case
 
+**Scene geometry:** rays are cast against a triangulation of the mesh. Quad8
+elements are subdivided on a 3 × 3 parametric lattice through their curved map
+(18 triangles each), so the scene follows the same surface the rays leave from;
+Quad4 and Tri3 are split into 2 and 1 triangles, Tri6 is represented by its
+corner triangle, and any extra `obstruction_groups` blockers are triangulated
+from corner nodes only. The scene is therefore piecewise flat, and ray-shot
+results on a curved mesh carry a small extra discretisation error that the
+quadrature and pair-area Monte Carlo kernels (which integrate the curved map
+directly) do not.
+
 **Known limitation:** on coarsely faceted curved bodies (spheres, cylinders),
 adjacent element facets can disagree slightly at their shared edge, letting a
 near-grazing ray clip a neighbouring facet it geometrically shouldn't reach.
@@ -174,7 +198,18 @@ This produces a small, systematic bias (not ordinary MC noise — it does not
 shrink with `n_rays`) that decreases with mesh refinement. See
 `benchmarks/howell/RESULTS.md` for quantified examples.
 
-**Speed**, on a 72-point subset of the Howell catalog benchmark:
+**Accuracy**, on the same 72-point Howell subset at `n_rays=10000`: 59 of 72
+points (82%) within 1% of the published value, median error 0.18% — looser than
+quadrature or pair-area Monte Carlo, whose medians on the full 115-point suite
+are 0.005% and 0.008%. The worst cases are curved bodies (concentric and
+unequal spheres, sphere to disk, up to about 2.8%).
+
+**Closure:** row sums on a closed enclosure carry Monte Carlo noise that falls
+as `1/√n_rays`, so tightening them by sampling alone is expensive. For a closed
+enclosure, [`enforce_closure`](@ref) restores exact row sums and reciprocity
+afterwards.
+
+**Speed**, on that same 72-point subset:
 
 | Kernel | Total seconds | vs. ray-shooting |
 |---|---:|---:|
@@ -191,3 +226,5 @@ shrink with `n_rays`) that decreases with mesh refinement. See
 | Large or obstructed 3D mesh | Ray-shooting Monte Carlo (`n_rays=10000`) |
 | Quick estimate, curve mesh, or self-view factors | Pair-area Monte Carlo (`n_samples=5000`) |
 | GPU computation | Quadrature or either Monte Carlo variant |
+| Closed enclosure feeding a radiosity solve | Any method, then [`enforce_closure`](@ref) |
+| One pair of surfaces in a mesh of many shadowing bodies | Any method with `radiating_groups` (see [Obstruction Detection](@ref)) |

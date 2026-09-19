@@ -130,9 +130,21 @@ end
   tri_quad_rule = RadiativeViewFactor.ViewFactorKernel.tri_quad_rule
   for n in 1:8
     rule = tri_quad_rule(n)
-    # n=3 (degree-5) tabulated constants carry a ~4e-7 imprecision; the
-    # rest are exact to machine precision.
-    @test isapprox(sum(rule.weights), 0.5; atol=1e-6)
+    @test isapprox(sum(rule.weights), 0.5; atol=1e-13)
+  end
+  # Every rule integrates all monomials up to its own degree exactly
+  # (degrees 1, 2, 5, 7 for the 1-, 3-, 7- and 13-point rules; n >= 4 all
+  # use the 13-point rule). Regression: the 7-point rule's second weight used
+  # to be 0.13239444... instead of 0.13239415..., and the 13-point rule's
+  # 0.17561525763... instead of ...7432..., which broke exactness at 4e-7 and
+  # 3e-10 respectively.
+  for (n, degree) in ((1, 1), (2, 2), (3, 5), (4, 7), (8, 7))
+    rule = tri_quad_rule(n)
+    for a in 0:degree, b in 0:degree-a
+      q = sum(rule.weights[k] * rule.points[1, k]^a * rule.points[2, k]^b
+              for k in 1:size(rule.points, 2))
+      @test isapprox(q, factorial(a) * factorial(b) / factorial(a + b + 2); atol=1e-13)
+    end
   end
   # Degree-7 rule integrates a degree-7 polynomial (x^3 y^4) exactly.
   rule = tri_quad_rule(4)

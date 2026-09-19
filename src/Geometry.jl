@@ -266,6 +266,12 @@ end
     return N, dNdξ, dNdη
 end
 
+"""
+    quad4_physical_point(coords, nodes, ξ, η) -> SVector{3,Float64}
+
+Map (ξ,η) ∈ [-1,1]² to physical space for a Quad4 element. `nodes` is a
+length-4 index vector in Gmsh corner order.
+"""
 @inline function quad4_physical_point(coords::Matrix{Float64},
                                        nodes ::Vector{Int},
                                        ξ::Float64, η::Float64)::SVector{3,Float64}
@@ -278,6 +284,12 @@ end
     return x
 end
 
+"""
+    quad4_normal_and_area_element(coords, nodes, ξ, η) -> (n̂, dA)
+
+Compute the unit normal and area element at (ξ,η) for a Quad4 element. The
+normal follows the node winding (right-hand rule).
+"""
 @inline function quad4_normal_and_area_element(coords::Matrix{Float64},
                                                 nodes ::Vector{Int},
                                                 ξ::Float64, η::Float64)
@@ -306,6 +318,12 @@ end
     return N, dN
 end
 
+"""
+    line2_physical_point(coords, nodes, ξ) -> SVector{3,Float64}
+
+Map reference coordinate ξ ∈ [-1,1] to physical space for a Line2 element.
+`nodes` is a length-2 index vector [first endpoint, second endpoint].
+"""
 @inline function line2_physical_point(coords::Matrix{Float64},
                                        nodes ::Vector{Int},
                                        ξ::Float64)::SVector{3,Float64}
@@ -315,6 +333,14 @@ end
     return N1*x1 + N2*x2
 end
 
+"""
+    line2_normal_and_length_element(coords, nodes, ξ) -> (n̂, dL)
+
+Compute the in-plane unit normal and arc-length element for a Line2 element
+lying in the xy-plane. Both are constant along the element; the normal is the
+tangent rotated 90° counter-clockwise, and a zero-length element returns a zero
+normal and `dL = 0`.
+"""
 @inline function line2_normal_and_length_element(coords::Matrix{Float64},
                                                   nodes ::Vector{Int},
                                                   ξ::Float64)

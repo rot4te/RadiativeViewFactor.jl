@@ -35,7 +35,8 @@ import RadiativeViewFactor: MeshData, SurfaceElement, plot_mesh_normals,
 Visualise mesh elements with normal arrows coloured by physical group.
 
 For 2D curve meshes (`mesh.mesh_dim == 1`) elements are drawn as smooth
-quadratic curves and normals as arrows using `quiver!`.
+quadratic curves (Line3) or straight segments (Line2), with a normal arrow at
+each element midpoint.
 
 For 3D surface meshes (`mesh.mesh_dim == 2`) element edges and normals are
 projected onto the xy-plane as a quick sanity check. For full 3D inspection

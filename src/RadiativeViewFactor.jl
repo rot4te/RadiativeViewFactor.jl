@@ -69,8 +69,7 @@ export load_mesh,
 
 """
     plot_mesh_normals(mesh; normal_scale=nothing, group_colors=nothing,
-                      show_nodes=false, show_indices=false, backend_3d=auto)
-        -> Plots.Plot
+                      show_nodes=false, show_indices=false) -> Plots.Plot
 
 Visualise mesh elements with normal arrows coloured by physical group.
 
@@ -79,12 +78,16 @@ Requires Plots.jl to be loaded first:
 using Plots
 ```
 
+Curve meshes (`mesh.mesh_dim == 1`) are drawn in the xy-plane. Surface meshes
+are drawn as an xy-projection of the element edges and normals — a quick sanity
+check, not a 3-D view.
+
 # Arguments
 - `mesh`          : [`MeshData`](@ref) from [`load_mesh`](@ref)
 - `normal_scale`  : arrow length in mesh units. Auto-estimated from the
                     bounding box diagonal if omitted.
 - `group_colors`  : `Dict{Int,Any}` mapping physical group tag → any colour
-                    accepted by Plots.jl (e.g. `:red`, `"#FF0000"`).
+                    accepted by Plots.jl (e.g. `:red`, `"#FF0000"`),
                     overriding the automatic palette for specified groups.
 - `show_nodes`    : scatter-plot all element nodes.
 - `show_indices`  : annotate each element with its index number.

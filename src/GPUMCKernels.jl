@@ -46,7 +46,8 @@ import ..GPUKernels: gpu_pair_can_see
 export build_gpu_mc_arrays, launch_mc_kernel!
 
 # ---------------------------------------------------------------------------
-# Inline xorshift64 PRNG (no allocation, safe inside @kernel)
+# Inline PRNG: splitmix64 seeding + 32-bit xorshift hot loop (no allocation,
+# safe inside @kernel)
 # ---------------------------------------------------------------------------
 
 # Per-sample PRNG for the hot loop.  Uses 32-bit xorshift so it runs natively
