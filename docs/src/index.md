@@ -47,8 +47,10 @@ Beyond the integrators, the package can:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/rot4te/RadiativeViewFactor.jl")
+Pkg.add("RadiativeViewFactor")
 ```
+
+RadiativeViewFactor.jl is registered in the Julia General registry.
 
 Requires Julia 1.10 or later.
 
