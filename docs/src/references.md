@@ -8,7 +8,7 @@ The following works informed the numerical methods implemented in this package.
   — View factor definitions, the reciprocity relation, and Hottel's crossed-string method for 2D geometries.
 
 - Howell, J. R. *A Catalog of Radiation Heat Transfer Configuration Factors* (3rd ed.). <https://www.thermalradiation.net>
-  — Section C ("Factors from finite areas to finite areas") provides the published reference values used by the validation suite in `benchmarks/howell/`.
+  — Section C ("Factors from finite areas to finite areas") provides the published reference values used by the validation suite in `benchmarks/howell/` (see [Validation: Howell Catalog](@ref)).
 
 - Hamilton, D. C., & Morgan, W. R. (1952). *Radiant-interchange configuration factors*. NACA Technical Note 2836.
   — A study that checks the configuration-factor solutions then in the literature, gives the more complicated ones as families of curves, and adds new cases (rectangles, triangles, finite-length cylinders).

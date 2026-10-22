@@ -23,6 +23,7 @@ makedocs(
             "Performance Guide"     => "manual/performance.md",
         ],
         "Theory"         => "theory.md",
+        "Validation"     => "validation/howell.md",
         "API Reference"  => "api.md",
         "References"     => "references.md",
         "Cite this repo" => "citing.md",
